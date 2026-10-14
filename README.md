@@ -1,70 +1,125 @@
-# cadtokens — Talk to your STEP files
+# cadtokens — GD&T out of STEP files. Locally.
 
-Parse STEP geometry and PMI, chat with CAD models in plain English,
-detect manufacturing features with a GNN.
+Read the semantic PMI (GD&T) of STEP AP242 files, turn it into an
+inspection characteristic list, and let AI agents query it through MCP.
 
-Runs **100% locally**. Your data never leaves your machine.
+- **Pure Python, zero dependencies** for parsing, PMI and characteristic lists
+- **Runs 100% locally** — no cloud, no upload, works air-gapped
+- **Validated** against the NIST MBE PMI test models
 
 ---
 
-## Demo
+## What it does
 
-```bash
-# Parse any STEP file — no dependencies needed
-$ cadtokens parse my_part.stp
-{
-  "entities": 962,
-  "faces": 13,
-  "edges": 22,
-  "points": 403
-}
+### 1. PMI extraction from STEP AP242 — mapped to faces
 
-# Extract PMI / GD&T
-$ cadtokens pmi my_part.stp
+Every tolerance, dimension and datum is resolved to the B-Rep faces (or
+edges, axes, or the whole part) it applies to. Values carry their unit;
+nothing is assumed.
 
-# Chat with your CAD model (requires ollama + pythonocc)
-$ cadtokens chat my_part.stp
-> How many faces does this part have?
-> What surface types are present?
+| Covered | |
+|---|---|
+| Geometric tolerances | all 15 types, value, unit, ⌀/S⌀ zone, Ⓜ Ⓛ Ⓕ Ⓣ ⟨ST⟩ modifiers, projected zone Ⓟ, unequally disposed Ⓤ, per-unit length/area (0.2/15), maximum tolerance, all around, whole part |
+| Datum reference frames | ordered compartments, common datums (A-B), datum modifiers (MMB/LMB) |
+| Dimensions | size, location, angular; ± and unilateral tolerances, limit dimensions, ISO fits (H7), MAX/MIN, decimal format, pattern count (4X) |
+| Data-quality checks | mixed units, PMI not linked to geometry, dimensions without a semantic value |
+
+### 2. Inspection characteristic list (FAI / EMPB)
+
+A numbered list — the starting point for an AS9102 Form 3, VDA 2 / EMPB or
+PPAP report. Characteristics on the same feature stay together, as on a
+ballooned drawing.
+
+```
+$ cadtokens characteristics nist_ftc_10_asme1_ap242-e2.stp
+#   Characteristic    Specification                 Min   Max    Unit  Applies to
+--  ----------------  ----------------------------  ----  -----  ----  ---------------------
+1   Surface profile   ⌓ | 1.5 | A | B | C           0     1.5    mm    whole part
+2   Flatness          ⏥ | 0.2                       0     0.2    mm    1 faces
+3   Diameter          ⌀6.00 ±0.15                   5.85  6.15   mm    2 faces
+4   Perpendicularity  ⟂ | ⌀0.25 | A                 0     0.25   mm    2 faces
+...
+10  Diameter          8X ⌀2.50 ±0.15                2.35  2.65   mm    16 faces
+11  Position          8X ⌖ | ⌀0.75 | A | B | C      0     0.75   mm    16 faces
+...
+36  Position          ⌖ | ⌀0.8 | D | E-F-G Ⓜ        0     0.8    mm    4 faces
+49  Position          2X ⌖ | ⌀0.8 Ⓟ3.2 | D | E | B  0     0.8    mm    supplemental geometry
 ```
 
-## Features
+Export for Excel (`;` and decimal comma for German Excel) or JSON:
 
-| Feature | Status | Dependencies |
-|---|---|---|
-| **STEP Parser + PMI** | ✅ Stable | None (pure Python) |
-| **Chat Interface** | ✅ Working | pythonocc, ollama |
-| **GNN Feature Recognition** | ⚠️ Experimental | torch, torch-geometric, pythonocc |
+```bash
+cadtokens chars part.stp -f csv -o part_merkmale.csv --delimiter ";" --decimal-comma
+cadtokens chars part.stp -f json -o part_characteristics.json
+cadtokens chars part.stp --toleranced-only     # skip basic / general-tolerance dims
+```
 
-### STEP Parser + PMI Extraction
+When the file itself is inconsistent, you are told instead of getting a
+silently wrong list:
 
-Pure Python parser for ISO 10303-21 (STEP Part 21) files.
-Zero external dependencies.
+```
+1 data-quality warning(s):
+  ! Mixed length units in PMI: tolerances use ['mm'], dimensions use ['in'].
+    The file may be exported inconsistently — check values against the drawing.
+```
 
-- Full entity parsing, reference graph, B-Rep topology extraction
-- **PMI/GD&T extraction** — tolerances, dimensions, datums, surface finish
-- Face-level PMI mapping — know exactly which tolerance applies to which face
-- Edit + re-serialize STEP files (translate, renumber, modify entities)
-- Supports AP203, AP214, AP242
+### 3. MCP server — let AI agents read GD&T
 
-### Chat with your CAD files
+Any MCP client (Claude Code, Claude Desktop, local agents) can ask
+*"which features have a position tolerance tighter than 0.1 mm, and to which
+datums?"* and get exact answers from the file, not a guess from a drawing image.
 
-Natural language Q&A powered by a local LLM (Ollama).
-Tool-calling architecture: the LLM queries parsed geometry data, runs OCC
-analysis, and returns human-readable answers.
+```bash
+pip install -e ".[mcp]"
+claude mcp add cadtokens -- cadtokens mcp
+```
 
-- CLI and Gradio web UI
-- No API keys, no cloud, no data leaves your machine
-- Extensible — add your own tools
+Claude Desktop (`claude_desktop_config.json`):
 
-### GNN Feature Recognition ⚠️
+```json
+{ "mcpServers": { "cadtokens": { "command": "cadtokens", "args": ["mcp"] } } }
+```
 
-12-class manufacturing feature classification on B-Rep faces
-(holes, pockets, bosses, fillets, chamfers, etc.).
+| Tool | |
+|---|---|
+| `pmi_summary` | units, counts, datum reference frames, data-quality warnings |
+| `list_characteristics` | numbered characteristic list; filter by kind or tolerance band |
+| `get_characteristic` | full detail of one characteristic |
+| `face_pmi` | all PMI on one face |
+| `datum_reference_frames` | datums, their faces, and where each frame is used |
+| `export_characteristics` | write CSV/JSON (never overwrites unless asked) |
 
-- BRepGNN with ~4.7M parameters
-- 78% inference accuracy on real STEP parts
-- Early stage — contributions welcome
+---
+
+## Validation
+
+Tested against the 17 AP242 files of the
+[NIST MBE PMI test models](https://www.nist.gov/el/systems-integration-division-73400/mbe-pmi-validation-and-conformance-testing/download-free-cad)
+(CTC, FTC, STC — AP242 editions 1–3, mm and inch, files from several CAD systems):
+
+| | |
+|---|---|
+| Geometric tolerances found | 362 / 362 |
+| … linked to geometry | 360 / 362 — the other 2 have no geometry link in the file (flagged) |
+| Dimensions linked to geometry | 268 / 268 |
+| Feature control frames vs. NIST FTC-10 drawing | match (spot-checked in `tests/test_nist.py`) |
+| Parse + extract | ~5 MB/s, pure Python |
+
+```bash
+python scripts/fetch_nist.py      # downloads the NIST models (sha256-pinned)
+pytest
+```
+
+## Not yet supported
+
+Be aware of these before using the list for a real inspection:
+
+- **ISO 286 fit limits** are not computed — `⌀3.5 G6` is flagged, not guessed
+- **Graphical-only PMI** (no semantic representation) cannot be read; such
+  dimensions are flagged
+- Datum targets, thread designations (M3x0.5-6g), surface texture, notes
+- Assemblies (PMI is read per file, without assembly transforms)
+- Very large files: memory use is roughly 45× file size
 
 ---
 
@@ -73,195 +128,45 @@ analysis, and returns human-readable answers.
 ```bash
 git clone https://github.com/giltsch/cadtokens.git
 cd cadtokens
-pip install -e .
+pip install -e .              # core: no dependencies
+pip install -e ".[mcp]"       # + MCP server
 ```
 
-The core (STEP parser + PMI) has **zero dependencies** — it works with just the clone.
-
-### Optional dependencies
-
-For the chat interface and other features, install extras:
-
-```bash
-# Chat (CLI) — needs pythonocc + ollama
-pip install -e ".[chat]"
-
-# Web UI — adds Gradio
-pip install -e ".[ui]"
-
-# GNN feature recognition (experimental)
-pip install -e ".[gnn]"
-
-# Everything
-pip install -e ".[all]"
-```
-
-**Chat also requires [Ollama](https://ollama.ai) running locally:**
-
-```bash
-curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull qwen3:14b
-```
-
----
-
-## Quick Start
-
-### Parse a STEP file (no dependencies needed)
+## Python API
 
 ```python
 import cadtokens
+from cadtokens.characteristics import build_characteristics, to_csv
 
-# Load and parse
-sf = cadtokens.load("part.stp")
+pmi = cadtokens.extract_pmi(cadtokens.load("part.stp"))
 
-# Explore topology
-g = cadtokens.graph(sf)
-print(f"Entity types: {g.entity_count_by_type()}")
+for t in pmi.tolerances:
+    print(t.tolerance_type, t.value, t.unit, t.datum_labels, t.face_ids)
 
-brep = cadtokens.BRepExtractor(g)
-print(f"Faces: {len(brep.get_faces())}")
-print(f"Edges: {len(brep.get_edge_curves())}")
+for w in pmi.warnings:
+    print("!", w)
+
+chars = build_characteristics(pmi)
+to_csv(chars, "part_characteristics.csv")
 ```
 
-### Extract PMI / GD&T
-
-```python
-import cadtokens
-
-sf = cadtokens.load("part_with_pmi.stp")
-pmi = cadtokens.extract_pmi(sf)
-
-for tol in pmi.tolerances:
-    print(f"{tol.tolerance_type}: {tol.value}")
-    print(f"  Applied to faces: {tol.face_ids}")
-    print(f"  Datum labels: {tol.datum_labels}")
-
-for dim in pmi.dimensions:
-    print(f"{dim.dimension_type}: {dim.nominal_value}")
-```
-
-### Edit a STEP file
-
-```python
-import cadtokens
-
-sf = cadtokens.load("part.stp")
-editor = cadtokens.edit(sf)
-editor.translate(10.0, 0.0, 0.0)
-editor.renumber()
-cadtokens.save(sf, "moved_part.stp")
-```
-
-### CLI
-
-```bash
-# Parse to JSON
-cadtokens parse part.stp
-cadtokens parse part.stp --full    # include face details
-
-# Extract PMI
-cadtokens pmi part.stp
-
-# Interactive chat
-cadtokens chat part.stp
-cadtokens chat part.stp --model ministral:3b
-
-# Web UI
-cadtokens ui
-cadtokens ui --port 8080
-
-# Quick geometry summary (requires pythonocc)
-cadtokens info part.stp
-```
+The parser also exposes the STEP entity graph, B-Rep topology
+(`cadtokens.BRepExtractor`), a STEP editor and a PMI writer
+(`cadtokens.PMIWriter`) for attaching tolerances to faces.
 
 ---
 
-## Architecture
+## Experimental
 
-```
-STEP file
-  │
-  ├─► step_engine (pure Python)
-  │     ├── Parser → StepFile (entities, refs, topology)
-  │     ├── ReferenceGraph → face/edge/point extraction
-  │     ├── PMIExtractor → tolerances, dimensions, datums
-  │     └── StepEditor → modify + re-serialize
-  │
-  ├─► tools (pythonocc)
-  │     ├── GeometryTools → areas, volumes, curvature, normals
-  │     ├── StepAnalyzer → detailed face/edge analysis
-  │     └── StepValidator → geometry checks
-  │
-  ├─► chat (ollama + gradio)
-  │     ├── CADChatAgent → LLM + tool-calling loop
-  │     └── chat_ui → Gradio web interface
-  │
-  └─► gnn (torch + torch-geometric)  ⚠️ experimental
-        ├── BRepGNN → 12-class face segmentation
-        └── GNNTools → inference wrapper
-```
+Not part of the core, not validated to the same standard:
 
----
-
-## Package Structure
-
-```
-cadtokens/
-├── __init__.py          # Top-level API: load, parse, extract_pmi, chat, ...
-├── cli.py               # CLI entry point (cadtokens parse/pmi/chat/ui/info)
-│
-├── step_engine/         # Pure Python STEP parser + PMI (zero deps)
-│   ├── model.py         # Data model: StepFile, Entity, Ref, ...
-│   ├── tokenizer.py     # Lexer for ISO 10303-21
-│   ├── parser.py        # Recursive descent parser
-│   ├── serializer.py    # STEP file writer
-│   ├── graph.py         # Reference graph + B-Rep extraction
-│   ├── editor.py        # Edit entities (translate, renumber, ...)
-│   └── pmi.py           # PMI/GD&T extraction (tolerances, datums, ...)
-│
-├── tools/               # OCC-based geometry analysis
-│   ├── geometry_tools.py
-│   ├── cad_renderer.py
-│   ├── step_analyzer.py
-│   └── step_validator.py
-│
-├── chat/                # LLM chat interface
-│   ├── cad_chat.py      # CLI agent (tool-calling loop)
-│   └── chat_ui.py       # Gradio web UI
-│
-└── gnn/                 # GNN feature recognition (experimental)
-    ├── brep_gnn.py      # BRepGNN model architecture
-    ├── gnn_tools.py     # Inference wrapper
-    ├── shape_to_graph.py
-    └── cad_graph_dataset.py
-```
-
----
-
-## Related Work
-
-This project builds on research in GNN-based CAD understanding:
-
-- [BrepMFR](https://github.com/zhangshuming0668/BrepMFR) — GNN for machining feature recognition
-- [AAGNet](https://github.com/whjdark/AAGNet) — Multi-task GNN for B-Rep
-- [Hierarchical CADNet](https://github.com/xupeiwust/hierarchical-cadnet) — Hierarchical GNN from CAD
-
-What makes cadtokens different: **natural language interface**.
-Those repos classify faces. This one lets you **ask questions**.
-
----
-
-## Contributing
-
-Contributions welcome! Especially for:
-
-- GNN accuracy improvements (currently ~78%)
-- Additional STEP schema support
-- New tool functions for the chat agent
-- Documentation and examples
-
----
+- **Chat** (`cadtokens chat part.stp`, `cadtokens ui`) — local LLM via Ollama
+  over OCC geometry tools. Requires `pythonocc-core` (conda) and Ollama.
+  Defaults to a local model and warns if an Ollama `-cloud` model is chosen.
+  The web UI binds to localhost.
+- **GNN face classification** (`cadtokens/gnn`) — 12 classes derived from
+  Fusion 360 Gallery operation labels (e.g. CutSide + cylinder → hole wall),
+  ~78% on those derived labels. Not a validated machining-feature recognizer.
 
 ## License
 

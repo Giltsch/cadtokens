@@ -35,8 +35,8 @@ def main():
     # ── Tolerances ──────────────────────────────────────────────────────
     print(f"Tolerances ({len(pmi.tolerances)}):")
     for t in pmi.tolerances:
-        cat = cadtokens.tolerance_category(t)
-        print(f"  [{cat}] {t.tolerance_type}: {t.value}")
+        cat = cadtokens.tolerance_category(t.tolerance_type)
+        print(f"  [{cat}] {t.tolerance_type}: {t.value} {t.unit or ''}")
         if t.face_ids:
             print(f"    → Faces: {t.face_ids}")
         if t.datum_labels:
@@ -45,7 +45,7 @@ def main():
     # ── Dimensions ──────────────────────────────────────────────────────
     print(f"\nDimensions ({len(pmi.dimensions)}):")
     for d in pmi.dimensions:
-        print(f"  {d.dimension_type}: {d.nominal_value}")
+        print(f"  {d.dimension_type}: {d.nominal_value} {d.unit or ''}")
         if d.face_ids:
             print(f"    → Faces: {d.face_ids}")
 
