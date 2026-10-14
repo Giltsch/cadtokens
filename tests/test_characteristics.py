@@ -67,11 +67,29 @@ class TestBuild:
         r = [c for c in build_characteristics(make_pmi()) if c.source_entity_id == 40][0]
         assert r.specification == "⌀0.250 +0.003/-0.000"
 
-    def test_fit_is_flagged_not_guessed(self):
+    def test_fit_limits_computed(self):
         r = [c for c in build_characteristics(make_pmi()) if c.source_entity_id == 50][0]
-        assert r.specification == "⌀3.5 G6"
+        assert r.specification == "⌀3.5 G6 (+0.012/+0.004)"
+        assert (r.lower_limit, r.upper_limit) == pytest.approx((3.504, 3.512))
+        assert any("ISO 286-1" in n for n in r.notes)
+
+    def test_fit_in_inch_file_converted(self):
+        pmi = make_pmi()
+        pmi.dimensions = [DimensionInfo(entity_id=70, name="DIMENSIONAL_SIZE",
+                                        dimension_type="DIMENSIONAL_SIZE", semantic_name="diameter",
+                                        nominal_value=1.0, fit="H7", face_ids=[1], unit="in")]
+        r = [c for c in build_characteristics(pmi) if c.source_entity_id == 70][0]   # 25.4 mm H7: 0/+21 µm
+        assert (r.lower_limit, r.upper_limit) == pytest.approx((1.0, 1.0 + 0.021 / 25.4))
+
+    def test_unsupported_fit_is_flagged_not_guessed(self):
+        pmi = make_pmi()
+        pmi.dimensions = [DimensionInfo(entity_id=80, name="DIMENSIONAL_SIZE",
+                                        dimension_type="DIMENSIONAL_SIZE", semantic_name="diameter",
+                                        nominal_value=25.0, fit="ZC9", face_ids=[1], unit="mm")]
+        r = [c for c in build_characteristics(pmi) if c.source_entity_id == 80][0]
+        assert r.specification == "⌀25 ZC9"
         assert r.lower_limit is None and r.upper_limit is None
-        assert any("ISO 286" in n for n in r.notes)
+        assert any("not computed" in n for n in r.notes)
 
     def test_toleranced_only(self):
         pmi = make_pmi()
@@ -115,5 +133,6 @@ def test_nist_ftc10_characteristics():
     specs = [c.specification for c in build_characteristics(pmi)]
     assert len(specs) == 66
     for expected in ("8X ⌖ | ⌀0.75 | A | B | C", "2X ⌖ | ⌀0.8 Ⓟ3.2 | D | E | B",
-                     "3X ⌖ | ⌀0 Ⓛ | H | K | L", "⏤ | 0.2/15", "⌀3.50 G6"):
+                     "3X ⌖ | ⌀0 Ⓛ | H | K | L", "⏤ | 0.2/15",
+                     "⌀3.50 G6 (+0.012/+0.004)"):
         assert expected in specs

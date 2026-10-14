@@ -24,6 +24,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
+from cadtokens.iso286 import UnsupportedFit, fit_deviations
 from cadtokens.step_engine.pmi import (
     DatumReference, DimensionInfo, PMIData, ToleranceInfo, tolerance_category,
 )
@@ -138,6 +139,18 @@ def _applies_to(face_ids, edge_ids, other_ids, whole_part) -> str:
 # Builders
 # ======================================================================
 
+_MM_PER_UNIT = {'mm': 1.0, 'in': 25.4, 'm': 1000.0, 'cm': 10.0}
+
+
+def _fit_deviations(d: DimensionInfo) -> Tuple[float, float]:
+    """ISO 286 deviations in the dimension's own unit."""
+    scale = _MM_PER_UNIT.get(d.unit or '')
+    if scale is None:
+        raise UnsupportedFit(f"unit {d.unit!r} unknown")
+    lo, up = fit_deviations(d.nominal_value * scale, d.fit, d.fit_kind)
+    return round(lo / scale, 7), round(up / scale, 7)
+
+
 def _dimension_row(d: DimensionInfo) -> Characteristic:
     semantic = (d.semantic_name or '').strip().lower()
     angular = 'ANGULAR' in d.dimension_type
@@ -161,7 +174,16 @@ def _dimension_row(d: DimensionInfo) -> Characteristic:
         lo, up = d.lower_tolerance, d.upper_tolerance
         if d.fit:
             spec += f" {d.fit}"
-            notes.append(f"ISO 286 fit {d.fit} — limits not computed, look up in ISO 286-2.")
+            try:
+                lo_dev, up_dev = _fit_deviations(d)
+            except UnsupportedFit as e:
+                notes.append(f"ISO 286 fit {d.fit} — limits not computed ({e}).")
+            else:
+                limit_dec = None if dec is None else max(dec, 3 if unit == 'mm' else 4)
+                spec += f" ({_signed(up_dev, limit_dec)}/{_signed(lo_dev, limit_dec)})"
+                lower = round(d.nominal_value + lo_dev, 6)
+                upper = round(d.nominal_value + up_dev, 6)
+                notes.append(f"Limits per ISO 286-1 ({d.fit_kind or 'hole/shaft by letter case'}).")
         elif lo is not None and up is not None:
             if abs(up + lo) < 1e-12 and up > 0:
                 spec += f" ±{_num(up, dec)}"
