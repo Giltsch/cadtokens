@@ -1,7 +1,8 @@
 # cadtokens — GD&T out of STEP files. Locally.
 
-Read the semantic PMI (GD&T) of STEP AP242 files, turn it into an
-inspection characteristic list, and let AI agents query it through MCP.
+Read the semantic PMI (GD&T) of STEP AP242 files, check it for errors, and
+turn it into a ballooned inspection report — plus an MCP server so AI agents
+can query it.
 
 - **Pure Python, zero dependencies** for parsing, PMI and characteristic lists
 - **Runs 100% locally** — no cloud, no upload, works air-gapped
@@ -54,6 +55,21 @@ cadtokens chars part.stp -f json -o part_characteristics.json
 cadtokens chars part.stp --toleranced-only     # skip basic / general-tolerance dims
 ```
 
+ISO fits are resolved to limits per ISO 286-1 (`⌀3.5 G6 (+0.012/+0.004)` →
+3.504–3.512); classes outside the tables are flagged, never guessed.
+
+### Ballooned inspection report (PDF)
+
+```bash
+cadtokens report part.stp                  # → part_inspection.pdf
+```
+
+Page 1: isometric wireframe of the part with numbered balloons pointing at
+each characteristic's feature, plus any data-quality warnings. Following
+pages: the characteristic table with feature control frames drawn as real
+GD&T symbols, numeric limits, faces, and empty *Measured* / *OK* columns for
+the inspector. Pure Python, no fonts or CAD kernel needed.
+
 When the file itself is inconsistent, you are told instead of getting a
 silently wrong list:
 
@@ -87,7 +103,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `get_characteristic` | full detail of one characteristic |
 | `face_pmi` | all PMI on one face |
 | `datum_reference_frames` | datums, their faces, and where each frame is used |
-| `export_characteristics` | write CSV/JSON (never overwrites unless asked) |
+| `export_characteristics` | write CSV, JSON or the ballooned PDF (never overwrites unless asked) |
 
 ---
 
@@ -114,12 +130,14 @@ pytest
 
 Be aware of these before using the list for a real inspection:
 
-- **ISO 286 fit limits** are not computed — `⌀3.5 G6` is flagged, not guessed
+- ISO 286 fits beyond 500 mm or outside C–S / c–s are flagged, not computed
 - **Graphical-only PMI** (no semantic representation) cannot be read; such
   dimensions are flagged
 - Datum targets, thread designations (M3x0.5-6g), surface texture, notes
 - Assemblies (PMI is read per file, without assembly transforms)
 - Very large files: memory use is roughly 45× file size
+- The report view is a wireframe (no hidden-line removal); balloons on
+  whole-part or supplemental-geometry characteristics appear in the table only
 
 ---
 

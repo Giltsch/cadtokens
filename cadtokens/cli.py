@@ -6,6 +6,7 @@ Usage:
     cadtokens parse   part.stp              # Parse → JSON
     cadtokens pmi     part.stp              # Extract PMI/GD&T
     cadtokens characteristics part.stp      # Inspection characteristic list
+    cadtokens report  part.stp              # Ballooned inspection report (PDF)
     cadtokens mcp                           # MCP server for AI agents
     cadtokens chat    part.stp              # Interactive chat (CLI)
     cadtokens ui      part.stp              # Web UI (Gradio)
@@ -128,7 +129,16 @@ def cmd_characteristics(args):
     pmi = extract_pmi(parse_file(args.step_file))
     chars = build_characteristics(pmi, include_untoleranced=not args.toleranced_only)
 
-    if args.format == "csv":
+    if args.format == "pdf":
+        if not args.output:
+            print("PDF needs an output file: -o report.pdf", file=sys.stderr)
+            sys.exit(2)
+        from cadtokens.report import write_report
+        info = write_report(args.step_file, args.output, pmi=pmi, chars=chars)
+        text = ""
+        print(f"{info['characteristics']} characteristics ({info['ballooned']} ballooned), "
+              f"{info['pages']} pages → {args.output}")
+    elif args.format == "csv":
         text = to_csv(chars, args.output, delimiter=args.delimiter,
                       decimal_comma=args.decimal_comma)
     elif args.format == "json":
@@ -142,7 +152,9 @@ def cmd_characteristics(args):
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(text + "\n")
 
-    if args.output:
+    if args.format == "pdf":
+        pass
+    elif args.output:
         print(f"{len(chars)} characteristics written to {args.output}")
     else:
         print(text)
@@ -166,6 +178,18 @@ def cmd_chat(args):
     agent = CADChatAgent(model=args.model)
     agent.set_step_file(args.step_file)
     interactive_mode(agent)
+
+
+def cmd_report(args):
+    """Ballooned inspection report PDF."""
+    from cadtokens.report import write_report
+
+    out = args.output or str(Path(args.step_file).with_suffix("")) + "_inspection.pdf"
+    info = write_report(args.step_file, out)
+    print(f"{info['characteristics']} characteristics ({info['ballooned']} ballooned), "
+          f"{info['pages']} pages → {out}")
+    for w in info["warnings"]:
+        print(f"  ! {w}", file=sys.stderr)
 
 
 def cmd_mcp(args):
@@ -221,11 +245,18 @@ def main():
     p.add_argument("step_file", help="Path to .stp/.step file")
     p.set_defaults(func=cmd_pmi)
 
+    # report
+    p = sub.add_parser("report", help="Ballooned inspection report (PDF)")
+    p.add_argument("step_file", help="Path to .stp/.step file (AP242 with semantic PMI)")
+    p.add_argument("-o", "--output", help="PDF file (default: <step name>_inspection.pdf)")
+    p.set_defaults(func=cmd_report)
+
     # characteristics
     p = sub.add_parser("characteristics", aliases=["chars"],
                        help="Inspection characteristic list (FAI / EMPB)")
     p.add_argument("step_file", help="Path to .stp/.step file (AP242 with semantic PMI)")
-    p.add_argument("-f", "--format", choices=["table", "csv", "json"], default="table")
+    p.add_argument("-f", "--format", choices=["table", "csv", "json", "pdf"], default="table",
+                   help="pdf = ballooned inspection report (needs -o)")
     p.add_argument("-o", "--output", help="Write to file instead of stdout")
     p.add_argument("--delimiter", default=",", help="CSV delimiter (use ';' for German Excel)")
     p.add_argument("--decimal-comma", action="store_true", help="CSV numbers as 0,15")

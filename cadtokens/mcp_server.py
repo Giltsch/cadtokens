@@ -166,19 +166,23 @@ def datum_reference_frames(step_path: str) -> Dict[str, Any]:
 def export_characteristics(step_path: str, output_path: str, format: str = 'csv',
                            delimiter: str = ',', decimal_comma: bool = False,
                            overwrite: bool = False) -> Dict[str, Any]:
-    """Write the characteristic list to a CSV (Excel) or JSON file.
+    """Write the characteristic list to CSV (Excel), JSON, or a ballooned PDF report.
 
     Use delimiter=';' and decimal_comma=True for German Excel.
+    format='pdf' writes an inspection report with a ballooned part view.
     Refuses to overwrite an existing file unless overwrite=True.
     """
-    if format not in ('csv', 'json'):
-        raise ValueError("format must be 'csv' or 'json'")
+    if format not in ('csv', 'json', 'pdf'):
+        raise ValueError("format must be 'csv', 'json' or 'pdf'")
     out = os.path.realpath(os.path.expanduser(output_path))
     if os.path.exists(out) and not overwrite:
         raise FileExistsError(f"{output_path} exists — pass overwrite=True to replace it")
     pmi = _load_pmi(step_path)
     chars = build_characteristics(pmi)
-    if format == 'csv':
+    if format == 'pdf':
+        from cadtokens.report import write_report
+        write_report(os.path.realpath(os.path.expanduser(step_path)), out, pmi=pmi, chars=chars)
+    elif format == 'csv':
         to_csv(chars, out, delimiter=delimiter, decimal_comma=decimal_comma)
     else:
         with open(out, 'w', encoding='utf-8') as f:

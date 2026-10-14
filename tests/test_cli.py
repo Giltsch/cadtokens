@@ -79,3 +79,15 @@ class TestCLICharacteristics:
         result = run_cli("chars", "-f", "json", SAMPLE_STEP)
         assert result.returncode == 0
         assert json.loads(result.stdout)["count"] == 0
+
+
+class TestCLIReport:
+    def test_report_pdf(self, tmp_path):
+        out = tmp_path / "r.pdf"
+        result = run_cli("report", SAMPLE_STEP, "-o", str(out))
+        assert result.returncode == 0, result.stderr
+        assert out.read_bytes().startswith(b"%PDF")
+
+    def test_chars_pdf_requires_output(self):
+        result = run_cli("chars", "-f", "pdf", SAMPLE_STEP)
+        assert result.returncode == 2
