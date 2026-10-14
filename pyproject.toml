@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "cadtokens"
+version = "0.1.0"
+description = "Talk to your STEP files — parse geometry + PMI, chat with CAD models, detect features."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Peter Behninger"},
+]
+keywords = ["cad", "step", "pmi", "gdt", "brep", "gnn", "llm", "manufacturing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Manufacturing",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core: zero external deps (parser + PMI runs on stdlib only)
+dependencies = []
+
+[project.optional-dependencies]
+# Chat interface (OCC geometry + LLM)
+chat = [
+    "pythonocc-core>=7.8",
+    "ollama>=0.4",
+]
+# Web UI
+ui = [
+    "pythonocc-core>=7.8",
+    "ollama>=0.4",
+    "gradio>=4.0",
+]
+# GNN feature recognition (experimental)
+gnn = [
+    "torch>=2.0",
+    "torch-geometric>=2.4",
+    "pythonocc-core>=7.8",
+]
+# Everything
+all = [
+    "pythonocc-core>=7.8",
+    "ollama>=0.4",
+    "gradio>=4.0",
+    "torch>=2.0",
+    "torch-geometric>=2.4",
+    "trimesh",
+    "Pillow",
+]
+
+[project.scripts]
+cadtokens = "cadtokens.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/giltsch/cadtokens"
+Repository = "https://github.com/giltsch/cadtokens"
+Issues = "https://github.com/giltsch/cadtokens/issues"
+
+[tool.setuptools.packages.find]
+include = ["cadtokens*"]
