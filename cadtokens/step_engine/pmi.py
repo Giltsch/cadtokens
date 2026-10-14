@@ -729,10 +729,11 @@ class PMIExtractor:
                 if ref_entity is not None and not ref_entity.has_type('PRODUCT_DEFINITION_SHAPE'):
                     sa_ref = p
                     break
+            # The semantic name ('diameter', 'radius', ...) is the last string;
+            # DIMENSIONAL_SIZE_WITH_DATUM_FEATURE has its entity name first.
             for p in params:
                 if isinstance(p, str) and p:
                     semantic = p
-                    break
 
         empty = _Targets([], [], [], False)
         t1 = self._resolve_targets(sa_ref.entity_id) if sa_ref else empty

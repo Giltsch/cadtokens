@@ -99,13 +99,24 @@ def get_ollama_tools(step_path: str) -> List[Dict]:
 # CAD Chat Agent
 # =============================================================================
 
+# Runs fully local. Ollama models with a "-cloud" suffix are executed on
+# Ollama's servers — the STEP data would leave the machine.
+DEFAULT_MODEL = "qwen3:14b"
+
+
+def warn_if_cloud_model(model: str):
+    if model.endswith("-cloud") or ":cloud" in model:
+        print(f"⚠️  '{model}' is an Ollama cloud model: tool results (your CAD data) "
+              f"are sent to Ollama's servers. Use a local model to keep data on-prem.",
+              file=sys.stderr)
+
 class CADChatAgent:
     """
     ReAct Agent für CAD-Analyse mit Ollama.
     """
     
     def __init__(self, 
-                 model: str = "qwen3-vl:235b-cloud",
+                 model: str = DEFAULT_MODEL,
                  step_path: Optional[str] = None):
         """
         Args:
@@ -114,6 +125,7 @@ class CADChatAgent:
         """
         self.model = model
         self.step_path = step_path
+        warn_if_cloud_model(model)
         self.tools = GeometryTools()
         self.conversation: List[Dict] = []
         
@@ -300,8 +312,8 @@ def main():
     parser.add_argument("step_file", nargs="?", help="STEP-Datei zum Analysieren")
     parser.add_argument("--interactive", "-i", action="store_true", 
                         help="Interaktiver Modus")
-    parser.add_argument("--model", "-m", default="qwen3-vl:235b-cloud",
-                        help="Ollama Modell (default: qwen3-vl:235b-cloud)")
+    parser.add_argument("--model", "-m", default=DEFAULT_MODEL,
+                        help=f"Ollama Modell (default: {DEFAULT_MODEL})")
     parser.add_argument("--query", "-q", help="Einzelne Frage stellen")
     
     args = parser.parse_args()

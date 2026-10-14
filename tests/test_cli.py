@@ -67,3 +67,15 @@ class TestCLIHelp:
         result = run_cli("parse", "--help")
         assert result.returncode == 0
         assert "step_file" in result.stdout.lower() or "STEP" in result.stdout
+
+
+class TestCLICharacteristics:
+    def test_table(self):
+        result = run_cli("characteristics", SAMPLE_STEP)
+        assert result.returncode == 0
+        assert "No semantic PMI" in result.stderr
+
+    def test_json(self):
+        result = run_cli("chars", "-f", "json", SAMPLE_STEP)
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["count"] == 0

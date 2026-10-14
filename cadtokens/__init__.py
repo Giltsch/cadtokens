@@ -43,9 +43,10 @@ def chat(step_path: str, model: str = "qwen3:14b", **kwargs):
 
     Requires: pip install ollama pythonocc-core
     """
-    from cadtokens.chat.cad_chat import CADChatAgent
-    agent = CADChatAgent(model_name=model)
-    agent.run(step_path)
+    from cadtokens.chat.cad_chat import CADChatAgent, interactive_mode
+    agent = CADChatAgent(model=model)
+    agent.set_step_file(step_path)
+    interactive_mode(agent)
 
 
 def chat_ui(step_path: str = None, **kwargs):
@@ -53,8 +54,9 @@ def chat_ui(step_path: str = None, **kwargs):
 
     Requires: pip install ollama pythonocc-core gradio
     """
-    from cadtokens.chat import chat_ui as _ui
-    _ui.main()
+    from cadtokens.chat.chat_ui import build_ui
+    build_ui().launch(server_name=kwargs.get("host", "127.0.0.1"),
+                      server_port=kwargs.get("port", 7860))
 
 
 __all__ = [

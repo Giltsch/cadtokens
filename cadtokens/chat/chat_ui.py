@@ -614,6 +614,7 @@ def _find_examples() -> List[Tuple[str, str]]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CAD-Brain Chat v2")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--model", type=str, default="ministral-3:14b")
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
@@ -632,7 +633,7 @@ if __name__ == "__main__":
 
     demo = build_ui()
     demo.launch(
-        server_name="0.0.0.0",
+        server_name=args.host,
         server_port=args.port,
         share=args.share,
         show_error=True,
