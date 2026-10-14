@@ -1,18 +1,18 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cadtokens"
 version = "0.1.0"
-description = "Talk to your STEP files — parse geometry + PMI, chat with CAD models, detect features."
+description = "STEP AP242 PMI/GD&T extraction, inspection characteristic lists and an MCP server — pure Python, fully local."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
     {name = "Peter Behninger"},
 ]
-keywords = ["cad", "step", "pmi", "gdt", "brep", "gnn", "llm", "manufacturing"]
+keywords = ["cad", "step", "ap242", "pmi", "gdt", "mbd", "inspection", "fai", "mcp", "manufacturing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -32,7 +32,11 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# Chat interface (OCC geometry + LLM)
+# MCP server for AI agents (Claude, local agents)
+mcp = [
+    "mcp>=1.2",
+]
+# Chat interface (OCC geometry + LLM) — experimental
 chat = [
     "pythonocc-core>=7.8",
     "ollama>=0.4",
@@ -51,6 +55,7 @@ gnn = [
 ]
 # Everything
 all = [
+    "mcp>=1.2",
     "pythonocc-core>=7.8",
     "ollama>=0.4",
     "gradio>=4.0",
