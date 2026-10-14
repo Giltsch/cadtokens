@@ -160,6 +160,7 @@ class PMIData:
     datums: List[DatumInfo] = field(default_factory=list)
     datum_systems: List[DatumSystemInfo] = field(default_factory=list)
     length_unit: Optional[str] = None   # dominant length unit of the PMI values
+    warnings: List[str] = field(default_factory=list)  # data-quality issues found in the file
 
     @property
     def has_pmi(self) -> bool:
@@ -187,6 +188,7 @@ class PMIData:
             'datum_systems': len(self.datum_systems),
             'annotated_faces': len(self.annotated_faces()),
             'length_unit': self.length_unit,
+            'warnings': len(self.warnings),
         }
 
     def annotated_faces(self) -> Set[int]:
@@ -335,13 +337,15 @@ class PMIExtractor:
         self._build_lookups()
         tolerances = self._extract_tolerances()
         dimensions = self._extract_dimensions()
-        return PMIData(
+        pmi = PMIData(
             tolerances=tolerances,
             dimensions=dimensions,
             datums=self._extract_datums(),
             datum_systems=self._extract_datum_systems(),
             length_unit=self._dominant_length_unit(tolerances, dimensions),
         )
+        pmi.warnings = validate_pmi(pmi)
+        return pmi
 
     # ------------------------------------------------------------------
     # Lookup table construction
@@ -941,6 +945,43 @@ class PMIExtractor:
                     value = self._measure(e.params[1].entity_id)[0] if len(e.params) > 1 and isinstance(e.params[1], Ref) else None
                     out.append(e.params[0].value if value is None else f"{e.params[0].value} {value:g}")
         return out
+
+
+def validate_pmi(pmi: PMIData) -> List[str]:
+    """Data-quality checks that matter before the PMI is used for inspection.
+
+    Flags things a CAD exporter got wrong or left out, so they are never
+    silently turned into a wrong characteristic.
+    """
+    warnings = []
+
+    def units(items):
+        return sorted({i.unit for i in items if i.unit and i.unit not in ('deg', 'rad')})
+
+    tol_units = units(pmi.tolerances)
+    dim_units = units([d for d in pmi.dimensions if 'ANGULAR' not in d.dimension_type])
+    all_units = sorted(set(tol_units) | set(dim_units))
+    if len(all_units) > 1:
+        warnings.append(
+            f"Mixed length units in PMI: tolerances use {tol_units or ['-']}, "
+            f"dimensions use {dim_units or ['-']}. The file may be exported "
+            f"inconsistently — check values against the drawing.")
+
+    for t in pmi.tolerances:
+        label = f"{t.tolerance_type} tolerance #{t.entity_id} ({t.name or 'unnamed'})"
+        if not (t.face_ids or t.edge_ids or t.other_geometry_ids or t.whole_part):
+            warnings.append(f"{label} is not linked to any geometry.")
+        if t.value is None:
+            warnings.append(f"{label} has no tolerance value.")
+
+    for d in pmi.dimensions:
+        label = f"{d.semantic_name or d.dimension_type} dimension #{d.entity_id}"
+        if not (d.face_ids or d.edge_ids or d.other_geometry_ids):
+            warnings.append(f"{label} is not linked to any geometry.")
+        if d.nominal_value is None and d.upper_limit is None and d.lower_limit is None:
+            warnings.append(f"{label} has no semantic value (graphical PMI only?).")
+
+    return warnings
 
 
 def _dedupe_str(items: List[str]) -> List[str]:
