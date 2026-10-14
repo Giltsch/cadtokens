@@ -1,20 +1,20 @@
 """
-cadtokens — Talk to your STEP files.
+cadtokens — read and check the GD&T in STEP AP242 files.
 
-Parse STEP geometry + PMI, chat with CAD models, detect manufacturing features.
+Pure Python, zero dependencies, fully local.
 
 Quick start:
     import cadtokens
+    from cadtokens.characteristics import build_characteristics
+    from cadtokens.report import write_report
 
-    # Parse a STEP file (zero dependencies)
-    sf = cadtokens.load("part.stp")
-    pmi = cadtokens.extract_pmi(sf)
-
-    # Chat (requires: pythonocc-core, ollama)
-    cadtokens.chat("part.stp")
+    pmi = cadtokens.extract_pmi(cadtokens.load("part.stp"))
+    print(pmi.warnings)                         # data-quality issues in the file
+    chars = build_characteristics(pmi)          # inspection characteristic list
+    write_report("part.stp", "part_inspection.pdf")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ── Feature 1: STEP Parser + PMI (always available, zero deps) ──────────────
 from cadtokens.step_engine import (
@@ -37,28 +37,6 @@ from cadtokens.step_engine import (
 )
 
 
-# ── Feature 2: Chat (lazy import — needs ollama + pythonocc) ────────────────
-def chat(step_path: str, model: str = "qwen3:14b", **kwargs):
-    """Launch interactive CLI chat with a STEP file.
-
-    Requires: pip install ollama pythonocc-core
-    """
-    from cadtokens.chat.cad_chat import CADChatAgent, interactive_mode
-    agent = CADChatAgent(model=model)
-    agent.set_step_file(step_path)
-    interactive_mode(agent)
-
-
-def chat_ui(step_path: str = None, **kwargs):
-    """Launch Gradio web UI for CAD chat.
-
-    Requires: pip install ollama pythonocc-core gradio
-    """
-    from cadtokens.chat.chat_ui import build_ui
-    build_ui().launch(server_name=kwargs.get("host", "127.0.0.1"),
-                      server_port=kwargs.get("port", 7860))
-
-
 __all__ = [
     # Version
     "__version__",
@@ -71,6 +49,4 @@ __all__ = [
     "PMIExtractor", "PMIWriter", "PMIData",
     "ToleranceInfo", "DimensionInfo", "DatumInfo", "DatumSystemInfo",
     "extract_pmi", "tolerance_category",
-    # Chat
-    "chat", "chat_ui",
 ]

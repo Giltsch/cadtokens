@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use cadtokens in your research, please cite it as below."
+title: "cadtokens: reading and checking semantic PMI (GD&T) in STEP AP242 files"
+type: software
+authors:
+  - family-names: Behninger
+    given-names: Peter
+version: 0.2.0
+license: Apache-2.0
+repository-code: "https://github.com/giltsch/cadtokens"
+keywords:
+  - STEP AP242
+  - PMI
+  - GD&T
+  - model-based definition
+  - inspection
+  - first article inspection

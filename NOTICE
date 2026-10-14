@@ -1,0 +1,8 @@
+cadtokens
+Copyright 2025-2026 Peter Behninger
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The tests use the NIST MBE PMI test models (downloaded on demand, not
+redistributed), provided by the National Institute of Standards and
+Technology: https://www.nist.gov/el/systems-integration-division-73400/mbe-pmi-validation-and-conformance-testing

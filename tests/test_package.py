@@ -5,7 +5,7 @@ import cadtokens
 
 class TestPackageAPI:
     def test_version(self):
-        assert cadtokens.__version__ == "0.1.0"
+        assert cadtokens.__version__ == "0.2.0"
 
     def test_core_exports(self):
         """All core symbols should be importable."""
@@ -33,13 +33,3 @@ class TestPackageAPI:
         assert cadtokens.ToleranceInfo is not None
         assert cadtokens.DimensionInfo is not None
         assert cadtokens.DatumInfo is not None
-
-    def test_chat_function(self):
-        """chat() should be a lazy function (callable but won't import deps until called)."""
-        assert callable(cadtokens.chat)
-        assert callable(cadtokens.chat_ui)
-
-    def test_gnn_subpackage_importable(self):
-        """GNN subpackage should import without crashing, even without deps."""
-        from cadtokens.gnn import HAS_GNN
-        assert isinstance(HAS_GNN, bool)

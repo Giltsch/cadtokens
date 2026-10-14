@@ -4,26 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cadtokens"
-version = "0.1.0"
+version = "0.2.0"
 description = "STEP AP242 PMI/GD&T extraction, inspection characteristic lists and an MCP server — pure Python, fully local."
 readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
 authors = [
     {name = "Peter Behninger"},
 ]
 keywords = ["cad", "step", "ap242", "pmi", "gdt", "mbd", "inspection", "fai", "mcp", "manufacturing"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Manufacturing",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -36,33 +37,14 @@ dependencies = []
 mcp = [
     "mcp>=1.2",
 ]
-# Chat interface (OCC geometry + LLM) — experimental
-chat = [
-    "pythonocc-core>=7.8",
-    "ollama>=0.4",
-]
-# Web UI
-ui = [
-    "pythonocc-core>=7.8",
-    "ollama>=0.4",
-    "gradio>=4.0",
-]
-# GNN feature recognition (experimental)
-gnn = [
-    "torch>=2.0",
-    "torch-geometric>=2.4",
-    "pythonocc-core>=7.8",
-]
-# Everything
+# Everything optional
 all = [
     "mcp>=1.2",
-    "pythonocc-core>=7.8",
-    "ollama>=0.4",
-    "gradio>=4.0",
-    "torch>=2.0",
-    "torch-geometric>=2.4",
-    "trimesh",
-    "Pillow",
+]
+# Development
+dev = [
+    "pytest>=7",
+    "mcp>=1.2",
 ]
 
 [project.scripts]
@@ -72,6 +54,7 @@ cadtokens = "cadtokens.cli:main"
 Homepage = "https://github.com/giltsch/cadtokens"
 Repository = "https://github.com/giltsch/cadtokens"
 Issues = "https://github.com/giltsch/cadtokens/issues"
+Changelog = "https://github.com/giltsch/cadtokens/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["cadtokens*"]

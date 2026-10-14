@@ -8,9 +8,6 @@ Usage:
     cadtokens characteristics part.stp      # Inspection characteristic list
     cadtokens report  part.stp              # Ballooned inspection report (PDF)
     cadtokens mcp                           # MCP server for AI agents
-    cadtokens chat    part.stp              # Interactive chat (CLI)
-    cadtokens ui      part.stp              # Web UI (Gradio)
-    cadtokens info    part.stp              # Quick geometry summary
 """
 
 import argparse
@@ -166,20 +163,6 @@ def cmd_characteristics(args):
         print("No semantic PMI found in this file.", file=sys.stderr)
 
 
-def cmd_chat(args):
-    """Interactive CLI chat with a STEP file."""
-    try:
-        from cadtokens.chat.cad_chat import CADChatAgent
-    except ImportError:
-        print("Chat requires: pip install ollama pythonocc-core")
-        sys.exit(1)
-
-    from cadtokens.chat.cad_chat import interactive_mode
-    agent = CADChatAgent(model=args.model)
-    agent.set_step_file(args.step_file)
-    interactive_mode(agent)
-
-
 def cmd_report(args):
     """Ballooned inspection report PDF."""
     from cadtokens.report import write_report
@@ -200,31 +183,6 @@ def cmd_mcp(args):
         print(f"MCP server requires: pip install 'cadtokens[mcp]'\n{e}", file=sys.stderr)
         sys.exit(1)
     mcp_main()
-
-
-def cmd_ui(args):
-    """Launch Gradio web UI."""
-    try:
-        from cadtokens.chat.chat_ui import build_ui
-    except ImportError as e:
-        print(f"Web UI requires: pip install ollama pythonocc-core gradio\n{e}")
-        sys.exit(1)
-
-    demo = build_ui()
-    demo.launch(server_name=args.host, server_port=args.port)
-
-
-def cmd_info(args):
-    """Quick geometry summary using OCC."""
-    try:
-        from cadtokens.tools.geometry_tools import GeometryTools
-    except ImportError:
-        print("Info requires: pip install pythonocc-core")
-        sys.exit(1)
-
-    tools = GeometryTools()
-    summary = tools.get_summary(args.step_file)
-    print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
 
 
 def main():
@@ -267,24 +225,6 @@ def main():
     # mcp
     p = sub.add_parser("mcp", help="Run the MCP server (stdio) for AI agents")
     p.set_defaults(func=cmd_mcp)
-
-    # chat
-    p = sub.add_parser("chat", help="Interactive CLI chat (experimental)")
-    p.add_argument("step_file", help="Path to .stp/.step file")
-    p.add_argument("--model", default="qwen3:14b", help="Local Ollama model name")
-    p.set_defaults(func=cmd_chat)
-
-    # ui
-    p = sub.add_parser("ui", help="Launch Gradio web UI")
-    p.add_argument("--port", type=int, default=7860, help="Server port")
-    p.add_argument("--host", default="127.0.0.1",
-                   help="Bind address (default: localhost only; 0.0.0.0 exposes it on the network)")
-    p.set_defaults(func=cmd_ui)
-
-    # info
-    p = sub.add_parser("info", help="Quick geometry summary (OCC)")
-    p.add_argument("step_file", help="Path to .stp/.step file")
-    p.set_defaults(func=cmd_info)
 
     args = parser.parse_args()
     if not args.command:

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Cache NIST test models
+        uses: actions/cache@v4
+        with:
+          path: tests/data/nist
+          key: nist-${{ hashFiles('scripts/fetch_nist.py') }}
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Fetch NIST models
+        run: test -n "$(ls tests/data/nist 2>/dev/null)" || python scripts/fetch_nist.py
+      - name: Test
+        run: pytest -q
+
+  core-without-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install without extras
+        run: pip install . pytest
+      - name: Tests skip the MCP parts cleanly
+        run: pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*

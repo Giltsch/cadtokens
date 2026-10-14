@@ -146,8 +146,9 @@ Be aware of these before using the list for a real inspection:
 ```bash
 git clone https://github.com/giltsch/cadtokens.git
 cd cadtokens
-pip install -e .              # core: no dependencies
+pip install -e .              # core: no dependencies, Python ≥ 3.10
 pip install -e ".[mcp]"       # + MCP server
+pip install -e ".[dev]"       # + tests
 ```
 
 ## Python API
@@ -174,18 +175,21 @@ The parser also exposes the STEP entity graph, B-Rep topology
 
 ---
 
-## Experimental
+## Citing
 
-Not part of the core, not validated to the same standard:
+If you use cadtokens in research, please cite it — see
+[`CITATION.cff`](CITATION.cff) (GitHub shows a "Cite this repository" button).
 
-- **Chat** (`cadtokens chat part.stp`, `cadtokens ui`) — local LLM via Ollama
-  over OCC geometry tools. Requires `pythonocc-core` (conda) and Ollama.
-  Defaults to a local model and warns if an Ollama `-cloud` model is chosen.
-  The web UI binds to localhost.
-- **GNN face classification** (`cadtokens/gnn`) — 12 classes derived from
-  Fusion 360 Gallery operation labels (e.g. CutSide + cylinder → hole wall),
-  ~78% on those derived labels. Not a validated machining-feature recognizer.
+## Contributing
+
+Bug reports with shareable STEP files are the most valuable contribution —
+see [CONTRIBUTING.md](CONTRIBUTING.md). Never attach customer or
+export-controlled data.
+
+Earlier experiments (LLM chat over OCC geometry, a GNN face classifier) were
+removed to keep the project focused; they are preserved under the git tag
+`archive/chat-gnn`.
 
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
