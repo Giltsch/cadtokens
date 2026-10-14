@@ -36,7 +36,7 @@ Focus: read and check the semantic PMI (GD&T) of STEP AP242 files.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
-- Requires Python 3.10 or newer.
+- Requires Python 3.10 or newer; tested on 3.10–3.15.
 
 ## [0.1.0] — 2026-02
 

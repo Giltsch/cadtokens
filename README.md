@@ -146,7 +146,7 @@ Be aware of these before using the list for a real inspection:
 ```bash
 git clone https://github.com/giltsch/cadtokens.git
 cd cadtokens
-pip install -e .              # core: no dependencies, Python ≥ 3.10
+pip install -e .              # core: no dependencies, Python 3.10–3.15
 pip install -e ".[mcp]"       # + MCP server
 pip install -e ".[dev]"       # + tests
 ```
