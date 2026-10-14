@@ -7,14 +7,21 @@ from/to STEP AP242 files. Resolves the full entity chain from PMI to geometry
 
 Supports:
   - Geometric tolerances (flatness, perpendicularity, position, profile, etc.)
-  - Dimensions (size, location, angular) with plus/minus tolerances
-  - Datums and datum systems (labels, features, targets)
-  - Full PMI-to-face resolution via SHAPE_ASPECT → GISU → ADVANCED_FACE
+    with tolerance modifiers, diametral zones, projected zones, unequally
+    disposed zones, unit-basis and maximum tolerances
+  - Datum reference frames with common datums (A-B) and datum modifiers
+  - Dimensions (size, location, angular) with plus/minus tolerances,
+    limit dimensions and ISO fits (e.g. H7)
+  - Units per value (mm, inch, degree) — never assumed
+  - Full PMI-to-geometry resolution via SHAPE_ASPECT → GISU/IIRU → faces,
+    edges, supplemental geometry, or the whole part
   - Writing new PMI and attaching it to existing faces
+
+Validated against the NIST MBE PMI test models (CTC/FTC/STC, AP242 e1–e3).
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 from .model import (
     StepFile, Entity, EntityPart, Ref, EnumValue, TypedValue,
@@ -28,6 +35,13 @@ from .graph import ReferenceGraph
 # ======================================================================
 
 @dataclass
+class DatumReference:
+    """One compartment of a feature control frame, e.g. 'A', 'A-B', 'B(M)'."""
+    label: str                      # 'A', or common datum 'A-B'
+    modifiers: List[str] = field(default_factory=list)  # MAXIMUM_MATERIAL_REQUIREMENT, ...
+
+
+@dataclass
 class ToleranceInfo:
     """A geometric tolerance (GD&T) annotation."""
     entity_id: int
@@ -35,12 +49,32 @@ class ToleranceInfo:
     tolerance_type: str             # FLATNESS, PERPENDICULARITY, POSITION, ...
     value: Optional[float] = None   # tolerance zone size
     face_ids: List[int] = field(default_factory=list)  # ADVANCED_FACE entity IDs
-    datum_labels: List[str] = field(default_factory=list)  # ['A', 'B', 'C']
+    datum_labels: List[str] = field(default_factory=list)  # ['A', 'B', 'C'] / ['A-B']
     datum_system_id: Optional[int] = None
     modifiers: List[str] = field(default_factory=list)  # MAXIMUM_MATERIAL_REQUIREMENT, etc.
     shape_aspect_id: Optional[int] = None
     value_entity_id: Optional[int] = None
     is_complex: bool = False        # True if multi-type entity
+    unit: Optional[str] = None      # 'mm', 'in', ...
+    zone_form: Optional[str] = None  # 'cylindrical or circular', 'spherical', ...
+    projected_length: Optional[float] = None
+    unequal_displacement: Optional[float] = None
+    max_value: Optional[float] = None       # GEOMETRIC_TOLERANCE_WITH_MAXIMUM_TOLERANCE
+    unit_basis: List[float] = field(default_factory=list)  # per-unit length/area
+    unit_basis_area_type: Optional[str] = None
+    datum_references: List[DatumReference] = field(default_factory=list)
+    all_around: bool = False
+    whole_part: bool = False        # applies to the entire part (e.g. profile all over)
+    edge_ids: List[int] = field(default_factory=list)
+    other_geometry_ids: List[int] = field(default_factory=list)  # axes, points, curve sets
+    feature_count: int = 1          # 4 for a '4X' pattern
+
+    @property
+    def is_diametral(self) -> bool:
+        """True if the tolerance zone is cylindrical/circular (⌀) or spherical (S⌀)."""
+        return bool(self.zone_form) and (
+            'cylindrical' in self.zone_form or 'circular' in self.zone_form
+            or 'spherical' in self.zone_form)
 
 
 @dataclass
@@ -50,6 +84,9 @@ class DimensionInfo:
     For DIMENSIONAL_SIZE: all faces in face_ids (single feature).
     For DIMENSIONAL_LOCATION: from_face_ids and to_face_ids are the two
     features whose distance is measured. face_ids = from + to combined.
+
+    Tolerance is given either as nominal ± (upper/lower_tolerance), as limit
+    values (upper/lower_limit, nominal may be None), or as an ISO fit.
     """
     entity_id: int
     name: str
@@ -64,6 +101,34 @@ class DimensionInfo:
     shape_aspect_id: Optional[int] = None
     shape_aspect_id_2: Optional[int] = None                 # second SA for location dims
     plus_minus_id: Optional[int] = None
+    unit: Optional[str] = None
+    upper_limit: Optional[float] = None     # limit dimensioning
+    lower_limit: Optional[float] = None
+    fit: Optional[str] = None               # ISO 286 fit, e.g. 'H7'
+    fit_kind: Optional[str] = None          # 'hole' / 'shaft'
+    qualifier: Optional[str] = None         # 'maximum', 'minimum', 'average', ...
+    decimals: Optional[int] = None          # display precision from the value format
+    edge_ids: List[int] = field(default_factory=list)
+    other_geometry_ids: List[int] = field(default_factory=list)
+    feature_count: int = 1
+
+    @property
+    def min_value(self) -> Optional[float]:
+        """Lowest acceptable value, if the dimension carries a numeric tolerance."""
+        if self.lower_limit is not None:
+            return self.lower_limit
+        if self.nominal_value is not None and self.lower_tolerance is not None:
+            return self.nominal_value + self.lower_tolerance
+        return None
+
+    @property
+    def max_value(self) -> Optional[float]:
+        """Highest acceptable value, if the dimension carries a numeric tolerance."""
+        if self.upper_limit is not None:
+            return self.upper_limit
+        if self.nominal_value is not None and self.upper_tolerance is not None:
+            return self.nominal_value + self.upper_tolerance
+        return None
 
 
 @dataclass
@@ -73,6 +138,8 @@ class DatumInfo:
     label: str                      # 'A', 'B', 'C', ...
     datum_feature_id: Optional[int] = None  # DATUM_FEATURE entity ID
     face_ids: List[int] = field(default_factory=list)
+    edge_ids: List[int] = field(default_factory=list)
+    other_geometry_ids: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -82,6 +149,7 @@ class DatumSystemInfo:
     name: str
     datum_labels: List[str] = field(default_factory=list)  # ordered: [primary, secondary, ...]
     compartment_ids: List[int] = field(default_factory=list)
+    datum_references: List[DatumReference] = field(default_factory=list)
 
 
 @dataclass
@@ -91,15 +159,21 @@ class PMIData:
     dimensions: List[DimensionInfo] = field(default_factory=list)
     datums: List[DatumInfo] = field(default_factory=list)
     datum_systems: List[DatumSystemInfo] = field(default_factory=list)
+    length_unit: Optional[str] = None   # dominant length unit of the PMI values
 
     @property
     def has_pmi(self) -> bool:
         return bool(self.tolerances or self.dimensions or self.datums)
 
     def face_annotations(self, face_id: int) -> Dict:
-        """Get all PMI annotations for a specific face."""
+        """Get all PMI annotations for a specific face.
+
+        Tolerances that apply to the whole part (e.g. profile all over)
+        are included for every face.
+        """
         result = {
-            'tolerances': [t for t in self.tolerances if face_id in t.face_ids],
+            'tolerances': [t for t in self.tolerances
+                           if face_id in t.face_ids or t.whole_part],
             'dimensions': [d for d in self.dimensions if face_id in d.face_ids],
             'datums': [d for d in self.datums if face_id in d.face_ids],
         }
@@ -112,6 +186,7 @@ class PMIData:
             'datums': len(self.datums),
             'datum_systems': len(self.datum_systems),
             'annotated_faces': len(self.annotated_faces()),
+            'length_unit': self.length_unit,
         }
 
     def annotated_faces(self) -> Set[int]:
@@ -169,6 +244,53 @@ _TOLERANCE_CATEGORIES = {
     'TOTAL_RUNOUT_TOLERANCE': 'runout',
 }
 
+_DIMENSION_TYPES = (
+    'DIMENSIONAL_SIZE', 'DIMENSIONAL_LOCATION',
+    'ANGULAR_SIZE', 'ANGULAR_LOCATION',
+    'DIRECTED_DIMENSIONAL_LOCATION',
+    'DIMENSIONAL_SIZE_WITH_DATUM_FEATURE',
+    'DIMENSIONAL_SIZE_WITH_PATH', 'DIMENSIONAL_LOCATION_WITH_PATH',
+)
+_LOCATION_DIMENSION_TYPES = {
+    'DIMENSIONAL_LOCATION', 'DIRECTED_DIMENSIONAL_LOCATION',
+    'ANGULAR_LOCATION', 'DIMENSIONAL_LOCATION_WITH_PATH',
+}
+
+# Geometry classes a shape aspect can be bound to
+_FACE_TYPES = {'ADVANCED_FACE', 'FACE_SURFACE', 'COMPLEX_TRIANGULATED_FACE',
+               'TRIANGULATED_FACE'}
+_EDGE_TYPES = {'EDGE_CURVE', 'ORIENTED_EDGE', 'SUBEDGE'}
+_SOLID_TYPES = {'MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'CLOSED_SHELL',
+                'SHELL_BASED_SURFACE_MODEL', 'TESSELLATED_SOLID', 'TESSELLATED_SHELL'}
+
+_SI_PREFIXES = {
+    'MILLI': 'm', 'CENTI': 'c', 'DECI': 'd', 'MICRO': 'µ', 'NANO': 'n', 'KILO': 'k',
+}
+_SI_UNIT_SYMBOLS = {'METRE': 'm', 'RADIAN': 'rad', 'STERADIAN': 'sr'}
+_CONVERSION_UNIT_SYMBOLS = {
+    'inch': 'in', 'foot': 'ft', 'millimetre': 'mm', 'millimeter': 'mm',
+    'metre': 'm', 'meter': 'm', 'degree': 'deg', 'radian': 'rad',
+}
+
+
+class _Targets(NamedTuple):
+    """Geometry a shape aspect resolves to."""
+    faces: List[int]
+    edges: List[int]
+    others: List[int]
+    whole_part: bool
+
+
+def _dedupe(ids: List[int]) -> List[int]:
+    seen: Set[int] = set()
+    return [i for i in ids if not (i in seen or seen.add(i))]
+
+
+def _param(part: Optional[EntityPart], idx: int) -> StepParam:
+    if part is None or len(part.params) <= idx:
+        return None
+    return part.params[idx]
+
 
 # ======================================================================
 # PMI Extractor
@@ -192,10 +314,17 @@ class PMIExtractor:
         self.g = graph
         self.sf = graph.step_file
 
-        # Precompute lookup tables
-        self._sa_to_faces: Optional[Dict[int, List[int]]] = None
-        self._composite_children: Optional[Dict[int, List[int]]] = None
-        self._datum_feature_to_datum: Optional[Dict[int, int]] = None
+        # Precomputed lookup tables (built in _build_lookups)
+        self._sa_items: Dict[int, List[int]] = {}           # shape aspect → geometry items
+        self._sa_children: Dict[int, List[int]] = {}        # parent SA → child SAs
+        self._datum_feature_to_datum: Dict[int, int] = {}
+        self._datum_to_feature: Dict[int, int] = {}
+        self._plus_minus: Dict[int, int] = {}               # dimension → PLUS_MINUS_TOLERANCE
+        self._dim_reps: Dict[int, int] = {}                 # dimension → SHAPE_DIMENSION_REPRESENTATION
+        self._zone_form: Dict[int, str] = {}                # tolerance → zone form name
+        self._zone_of_tolerance: Dict[int, int] = {}        # tolerance → TOLERANCE_ZONE
+        self._projected_length: Dict[int, int] = {}         # TOLERANCE_ZONE → length measure
+        self._unit_cache: Dict[int, Optional[str]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -204,419 +333,501 @@ class PMIExtractor:
     def extract(self) -> PMIData:
         """Extract all PMI from the STEP file."""
         self._build_lookups()
+        tolerances = self._extract_tolerances()
+        dimensions = self._extract_dimensions()
         return PMIData(
-            tolerances=self._extract_tolerances(),
-            dimensions=self._extract_dimensions(),
+            tolerances=tolerances,
+            dimensions=dimensions,
             datums=self._extract_datums(),
             datum_systems=self._extract_datum_systems(),
+            length_unit=self._dominant_length_unit(tolerances, dimensions),
         )
 
     # ------------------------------------------------------------------
     # Lookup table construction
     # ------------------------------------------------------------------
 
+    def _entity(self, ref: StepParam) -> Optional[Entity]:
+        if isinstance(ref, Ref):
+            return self.sf.entities.get(ref.entity_id)
+        return None
+
     def _build_lookups(self):
-        """Build the linking tables: shape_aspect → faces, composite → children."""
-        # SHAPE_ASPECT → ADVANCED_FACE via GEOMETRIC_ITEM_SPECIFIC_USAGE
-        self._sa_to_faces = {}
+        """Build all linking tables in one pass per entity type."""
+        sf, g = self.sf, self.g
 
-        for eid in self.g.find_by_type('GEOMETRIC_ITEM_SPECIFIC_USAGE'):
-            entity = self.sf[eid]
-            # GISU(name, desc, definition=SHAPE_ASPECT, used_rep, identified_item=FACE)
-            if len(entity.params) >= 5:
-                sa_ref = entity.params[2]
-                face_ref = entity.params[4]
-                if isinstance(sa_ref, Ref) and isinstance(face_ref, Ref):
-                    sa_id = sa_ref.entity_id
-                    face_id = face_ref.entity_id
-                    # Verify it's actually a face
-                    if face_id in self.sf.entities:
-                        face_entity = self.sf[face_id]
-                        if face_entity.has_type('ADVANCED_FACE'):
-                            self._sa_to_faces.setdefault(sa_id, []).append(face_id)
-
-        # Also via ITEM_IDENTIFIED_REPRESENTATION_USAGE
-        for eid in self.g.find_by_type('ITEM_IDENTIFIED_REPRESENTATION_USAGE'):
-            entity = self.sf[eid]
-            # IIRU(name, desc, definition=SHAPE_ASPECT, used_rep, identified_item)
-            if len(entity.params) >= 5:
-                sa_ref = entity.params[2]
-                item = entity.params[4]
+        # SHAPE_ASPECT → geometry via GEOMETRIC_ITEM_SPECIFIC_USAGE and
+        # ITEM_IDENTIFIED_REPRESENTATION_USAGE:
+        #   (name, desc, definition=SHAPE_ASPECT, used_rep, identified_item)
+        for usage_type in ('GEOMETRIC_ITEM_SPECIFIC_USAGE',
+                           'ITEM_IDENTIFIED_REPRESENTATION_USAGE'):
+            for eid in g.find_by_type(usage_type):
+                part = sf[eid].get_part(usage_type) or sf[eid].parts[0]
+                sa_ref, item = _param(part, 2), _param(part, 4)
                 if isinstance(sa_ref, Ref):
-                    sa_id = sa_ref.entity_id
-                    face_refs = self._extract_face_refs_from_item(item)
-                    for fid in face_refs:
-                        self._sa_to_faces.setdefault(sa_id, []).append(fid)
+                    items = self._sa_items.setdefault(sa_ref.entity_id, [])
+                    items.extend(self._item_refs(item))
 
-        # COMPOSITE_SHAPE_ASPECT → child SHAPE_ASPECTs via SHAPE_ASPECT_RELATIONSHIP
-        self._composite_children = {}
-        for eid in self.g.find_by_type('SHAPE_ASPECT_RELATIONSHIP'):
-            entity = self.sf[eid]
-            # SAR(name, desc, relating=parent, related=child)
-            if len(entity.params) >= 4:
-                parent = entity.params[2]
-                child = entity.params[3]
-                if isinstance(parent, Ref) and isinstance(child, Ref):
-                    self._composite_children.setdefault(
-                        parent.entity_id, []
-                    ).append(child.entity_id)
+        # SHAPE_ASPECT_RELATIONSHIP(name, desc, relating=parent, related=child)
+        for eid in g.find_by_type('SHAPE_ASPECT_RELATIONSHIP'):
+            params = sf[eid].params
+            if len(params) < 4:
+                continue
+            parent, child = params[2], params[3]
+            if not (isinstance(parent, Ref) and isinstance(child, Ref)):
+                continue
+            src, tgt = self._entity(parent), self._entity(child)
+            if src and tgt and src.has_type('DATUM_FEATURE') and tgt.has_type('DATUM'):
+                self._datum_feature_to_datum[parent.entity_id] = child.entity_id
+                self._datum_to_feature.setdefault(child.entity_id, parent.entity_id)
+            else:
+                self._sa_children.setdefault(parent.entity_id, []).append(child.entity_id)
 
-        # DATUM_FEATURE → DATUM mapping via SHAPE_ASPECT_RELATIONSHIP
-        self._datum_feature_to_datum = {}
-        for eid in self.g.find_by_type('SHAPE_ASPECT_RELATIONSHIP'):
-            entity = self.sf[eid]
-            if len(entity.params) >= 4:
-                p2 = entity.params[2]
-                p3 = entity.params[3]
-                if isinstance(p2, Ref) and isinstance(p3, Ref):
-                    src = self.sf.entities.get(p2.entity_id)
-                    tgt = self.sf.entities.get(p3.entity_id)
-                    if src and tgt:
-                        if src.has_type('DATUM_FEATURE') and tgt.has_type('DATUM'):
-                            self._datum_feature_to_datum[p2.entity_id] = p3.entity_id
+        # PLUS_MINUS_TOLERANCE(range, toleranced_dimension)
+        for eid in g.find_by_type('PLUS_MINUS_TOLERANCE'):
+            params = sf[eid].params
+            if len(params) >= 2 and isinstance(params[1], Ref):
+                self._plus_minus.setdefault(params[1].entity_id, eid)
 
-    def _extract_face_refs_from_item(self, item: StepParam) -> List[int]:
-        """Extract ADVANCED_FACE refs from an identified_item parameter.
+        # DIMENSIONAL_CHARACTERISTIC_REPRESENTATION(dimension, representation)
+        for eid in g.find_by_type('DIMENSIONAL_CHARACTERISTIC_REPRESENTATION'):
+            params = sf[eid].params
+            if len(params) >= 2 and isinstance(params[0], Ref) and isinstance(params[1], Ref):
+                self._dim_reps.setdefault(params[0].entity_id, params[1].entity_id)
 
-        Handles:
-          - Direct Ref to a face
-          - TypedValue like SET_REPRESENTATION_ITEM([#face1, #face2])
-          - List of refs
-        """
-        face_ids = []
+        # TOLERANCE_ZONE(name, desc, of_shape, product_definitional,
+        #                defining_tolerance (list), form)
+        for eid in g.find_by_type('TOLERANCE_ZONE'):
+            part = sf[eid].get_part('TOLERANCE_ZONE')
+            defining, form_ref = _param(part, 4), _param(part, 5)
+            form = self._entity(form_ref)
+            form_name = form.params[0] if form and form.params and isinstance(form.params[0], str) else None
+            for tol_ref in (defining if isinstance(defining, list) else [defining]):
+                if isinstance(tol_ref, Ref):
+                    self._zone_of_tolerance.setdefault(tol_ref.entity_id, eid)
+                    if form_name:
+                        self._zone_form.setdefault(tol_ref.entity_id, form_name)
+
+        # PROJECTED_ZONE_DEFINITION(zone, boundaries, projection_end, projected_length)
+        for eid in g.find_by_type('PROJECTED_ZONE_DEFINITION'):
+            params = sf[eid].params
+            if len(params) >= 4 and isinstance(params[0], Ref) and isinstance(params[3], Ref):
+                self._projected_length[params[0].entity_id] = params[3].entity_id
+
+    def _item_refs(self, item: StepParam) -> List[int]:
+        """Flatten an identified_item (Ref, typed SET, or list) to entity IDs."""
         if isinstance(item, Ref):
-            if item.entity_id in self.sf.entities:
-                e = self.sf[item.entity_id]
-                if e.has_type('ADVANCED_FACE'):
-                    face_ids.append(item.entity_id)
-        elif isinstance(item, TypedValue):
-            # SET_REPRESENTATION_ITEM([refs...])
-            if isinstance(item.value, list):
-                for v in item.value:
-                    if isinstance(v, Ref) and v.entity_id in self.sf.entities:
-                        e = self.sf[v.entity_id]
-                        if e.has_type('ADVANCED_FACE'):
-                            face_ids.append(v.entity_id)
-            elif isinstance(item.value, Ref):
-                face_ids.extend(self._extract_face_refs_from_item(item.value))
-        elif isinstance(item, list):
+            return [item.entity_id]
+        if isinstance(item, TypedValue):
+            return self._item_refs(item.value)
+        if isinstance(item, list):
+            out: List[int] = []
             for v in item:
-                face_ids.extend(self._extract_face_refs_from_item(v))
-        return face_ids
+                out.extend(self._item_refs(v))
+            return out
+        return []
 
     # ------------------------------------------------------------------
-    # Resolve faces for a shape_aspect
+    # Resolve geometry for a shape_aspect
     # ------------------------------------------------------------------
+
+    def _resolve_targets(self, shape_aspect_id: int,
+                         _visited: Optional[Set[int]] = None) -> _Targets:
+        """Resolve a SHAPE_ASPECT (possibly composite) to the geometry it names."""
+        visited = _visited if _visited is not None else set()
+        faces: List[int] = []
+        edges: List[int] = []
+        others: List[int] = []
+        whole_part = False
+
+        if shape_aspect_id in visited:
+            return _Targets(faces, edges, others, whole_part)
+        visited.add(shape_aspect_id)
+
+        sa = self.sf.entities.get(shape_aspect_id)
+        if sa is not None and sa.has_type('PRODUCT_DEFINITION_SHAPE'):
+            # Tolerance applied to the product shape itself, e.g. profile all over
+            return _Targets(faces, edges, others, True)
+
+        for item_id in self._sa_items.get(shape_aspect_id, []):
+            item = self.sf.entities.get(item_id)
+            if item is None:
+                continue
+            types = set(item.type_names)
+            if types & _FACE_TYPES:
+                faces.append(item_id)
+            elif types & _EDGE_TYPES:
+                edges.append(item_id)
+            elif types & _SOLID_TYPES:
+                whole_part = True
+            else:
+                others.append(item_id)
+
+        for child_id in self._sa_children.get(shape_aspect_id, []):
+            child = self._resolve_targets(child_id, visited)
+            faces.extend(child.faces)
+            edges.extend(child.edges)
+            others.extend(child.others)
+            whole_part = whole_part or child.whole_part
+
+        return _Targets(_dedupe(faces), _dedupe(edges), _dedupe(others), whole_part)
 
     def _resolve_faces(self, shape_aspect_id: int) -> List[int]:
         """Resolve a SHAPE_ASPECT (possibly composite) to face IDs."""
-        # Direct lookup
-        faces = list(self._sa_to_faces.get(shape_aspect_id, []))
+        return self._resolve_targets(shape_aspect_id).faces
 
-        # If composite, resolve children recursively
-        children = self._composite_children.get(shape_aspect_id, [])
-        for child_id in children:
-            faces.extend(self._resolve_faces(child_id))
-
-        # Deduplicate while preserving order
-        seen = set()
-        unique = []
-        for f in faces:
-            if f not in seen:
-                seen.add(f)
-                unique.append(f)
-        return unique
+    def _feature_count(self, shape_aspect_id: Optional[int]) -> int:
+        """Number of features in a pattern ('4X'), 1 for a single feature."""
+        sa = self.sf.entities.get(shape_aspect_id) if shape_aspect_id else None
+        if sa is None or not sa.has_type('COMPOSITE_GROUP_SHAPE_ASPECT'):
+            return 1
+        part = sa.get_part('COMPOSITE_GROUP_SHAPE_ASPECT') or sa.get_part('SHAPE_ASPECT') or sa.parts[0]
+        desc = _param(part, 1)
+        if isinstance(desc, str) and 'pattern' in desc.lower():
+            return max(1, len(self._sa_children.get(shape_aspect_id, [])))
+        return 1
 
     # ------------------------------------------------------------------
-    # Extract tolerance value
+    # Units and measures
     # ------------------------------------------------------------------
 
-    def _extract_measure_value(self, entity_id: int) -> Optional[float]:
-        """Extract a numeric value from a MEASURE_WITH_UNIT or similar entity."""
-        if entity_id not in self.sf.entities:
-            return None
-        entity = self.sf[entity_id]
+    def _unit_label(self, unit_id: int) -> Optional[str]:
+        """Short unit symbol ('mm', 'in', 'deg', ...) for a unit entity."""
+        if unit_id in self._unit_cache:
+            return self._unit_cache[unit_id]
+        label = None
+        unit = self.sf.entities.get(unit_id)
+        if unit is not None:
+            cbu = unit.get_part('CONVERSION_BASED_UNIT')
+            si = unit.get_part('SI_UNIT')
+            if cbu and cbu.params and isinstance(cbu.params[0], str):
+                name = cbu.params[0].strip().lower()
+                label = _CONVERSION_UNIT_SYMBOLS.get(name, name)
+            elif si and len(si.params) >= 2:
+                prefix, name = si.params[-2], si.params[-1]
+                symbol = _SI_UNIT_SYMBOLS.get(name.value if isinstance(name, EnumValue) else '', None)
+                if symbol:
+                    pre = _SI_PREFIXES.get(prefix.value, '') if isinstance(prefix, EnumValue) else ''
+                    label = pre + symbol
+        self._unit_cache[unit_id] = label
+        return label
 
-        # Try MEASURE_WITH_UNIT part (complex entities)
-        mwu = entity.get_part('MEASURE_WITH_UNIT')
-        if mwu and mwu.params:
-            val = mwu.params[0]
-            if isinstance(val, TypedValue):
-                if isinstance(val.value, (int, float)):
-                    return float(val.value)
-            elif isinstance(val, (int, float)):
-                return float(val)
+    def _measure(self, entity_id: Optional[int]) -> Tuple[Optional[float], Optional[str]]:
+        """Numeric value and unit of a measure entity (MEASURE_WITH_UNIT and kin)."""
+        entity = self.sf.entities.get(entity_id) if entity_id else None
+        if entity is None:
+            return None, None
 
-        # Try LENGTH_MEASURE_WITH_UNIT (simple)
-        lmwu = entity.get_part('LENGTH_MEASURE_WITH_UNIT')
-        if lmwu and lmwu.params:
-            val = lmwu.params[0]
-            if isinstance(val, TypedValue):
-                if isinstance(val.value, (int, float)):
-                    return float(val.value)
+        for part in entity.parts:
+            if not part.type_name.endswith('MEASURE_WITH_UNIT') or len(part.params) < 2:
+                continue
+            raw, unit_ref = part.params[0], part.params[1]
+            value = raw.value if isinstance(raw, TypedValue) else raw
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                unit = self._unit_label(unit_ref.entity_id) if isinstance(unit_ref, Ref) else None
+                return float(value), unit
 
         # Fallback: first TypedValue or numeric in any part
         for part in entity.parts:
             for p in part.params:
                 if isinstance(p, TypedValue) and isinstance(p.value, (int, float)):
-                    return float(p.value)
-                if isinstance(p, (int, float)):
-                    return float(p)
+                    return float(p.value), None
+                if isinstance(p, (int, float)) and not isinstance(p, bool):
+                    return float(p), None
+        return None, None
 
-        return None
+    def _extract_measure_value(self, entity_id: int) -> Optional[float]:
+        """Extract a numeric value from a MEASURE_WITH_UNIT or similar entity."""
+        return self._measure(entity_id)[0]
+
+    @staticmethod
+    def _dominant_length_unit(tolerances, dimensions) -> Optional[str]:
+        counts: Dict[str, int] = {}
+        for item in list(tolerances) + [d for d in dimensions if 'ANGULAR' not in d.dimension_type]:
+            if item.unit and item.unit not in ('deg', 'rad'):
+                counts[item.unit] = counts.get(item.unit, 0) + 1
+        return max(counts, key=counts.get) if counts else None
 
     # ------------------------------------------------------------------
     # Extract geometric tolerances
     # ------------------------------------------------------------------
 
     def _extract_tolerances(self) -> List[ToleranceInfo]:
-        tolerances = []
-        seen_ids = set()
-
-        # 1. Simple standalone tolerances (FLATNESS_TOLERANCE, etc.)
+        candidates: Set[int] = set(self.g.find_by_type('GEOMETRIC_TOLERANCE'))
         for ttype in _ALL_TOLERANCE_SUBTYPES:
-            for eid in self.g.find_by_type(ttype):
-                if eid in seen_ids:
-                    continue
-                entity = self.sf[eid]
+            candidates.update(self.g.find_by_type(ttype))
 
-                if entity.is_complex:
-                    # Complex entity — extract from GEOMETRIC_TOLERANCE part
-                    info = self._extract_complex_tolerance(entity)
-                else:
-                    # Simple tolerance: (name, desc, value_ref, shape_aspect_ref)
-                    info = self._extract_simple_tolerance(entity, ttype)
-
-                if info:
-                    seen_ids.add(eid)
-                    tolerances.append(info)
-
-        # 2. Complex entities found via GEOMETRIC_TOLERANCE type
-        for eid in self.g.find_by_type('GEOMETRIC_TOLERANCE'):
-            if eid in seen_ids:
-                continue
-            entity = self.sf[eid]
-            if entity.is_complex:
-                info = self._extract_complex_tolerance(entity)
-                if info:
-                    seen_ids.add(eid)
-                    tolerances.append(info)
-
+        tolerances = []
+        for eid in sorted(candidates):
+            info = self._extract_tolerance(self.sf[eid])
+            if info:
+                tolerances.append(info)
         return tolerances
 
-    def _extract_simple_tolerance(self, entity: Entity,
-                                  ttype: str) -> Optional[ToleranceInfo]:
-        """Extract info from a simple (non-complex) tolerance entity."""
-        params = entity.params
-        if len(params) < 4:
-            return None
+    def _extract_tolerance(self, entity: Entity) -> Optional[ToleranceInfo]:
+        """Extract a geometric tolerance in simple or complex (multi-type) form.
 
-        name = params[0] if isinstance(params[0], str) else ''
-        value_ref = params[2] if isinstance(params[2], Ref) else None
-        sa_ref = params[3] if isinstance(params[3], Ref) else None
-
-        value = self._extract_measure_value(value_ref.entity_id) if value_ref else None
-        faces = self._resolve_faces(sa_ref.entity_id) if sa_ref else []
-        short_type = ttype.replace('_TOLERANCE', '')
-
-        return ToleranceInfo(
-            entity_id=entity.entity_id,
-            name=name,
-            tolerance_type=short_type,
-            value=value,
-            face_ids=faces,
-            shape_aspect_id=sa_ref.entity_id if sa_ref else None,
-            value_entity_id=value_ref.entity_id if value_ref else None,
-            is_complex=False,
-        )
-
-    def _extract_complex_tolerance(self, entity: Entity) -> Optional[ToleranceInfo]:
-        """Extract info from a complex (multi-type) tolerance entity."""
-        # Find the GEOMETRIC_TOLERANCE part (has the core params)
-        gt_part = entity.get_part('GEOMETRIC_TOLERANCE')
-        if not gt_part or len(gt_part.params) < 4:
-            return None
-
-        name = gt_part.params[0] if isinstance(gt_part.params[0], str) else ''
-        value_ref = gt_part.params[2] if isinstance(gt_part.params[2], Ref) else None
-        sa_ref = gt_part.params[3] if isinstance(gt_part.params[3], Ref) else None
-
-        # Determine the specific tolerance subtype
+        Simple:  POSITION_TOLERANCE(name, desc, magnitude, toleranced_aspect[, datum_system])
+        Complex: ( GEOMETRIC_TOLERANCE(name, desc, magnitude, toleranced_aspect)
+                   GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE((datum_system))
+                   GEOMETRIC_TOLERANCE_WITH_MODIFIERS((.MAXIMUM_MATERIAL_REQUIREMENT.))
+                   POSITION_TOLERANCE() ... )
+        """
         ttype = 'GEOMETRIC'
         for type_name in entity.type_names:
             if type_name in _ALL_TOLERANCE_SUBTYPES:
                 ttype = type_name.replace('_TOLERANCE', '')
                 break
 
-        # Extract datum references
-        datum_labels = []
-        datum_system_id = None
+        core = entity.get_part('GEOMETRIC_TOLERANCE') if entity.is_complex else entity.parts[0]
+        if core is None or len(core.params) < 4:
+            return None
+
+        name = core.params[0] if isinstance(core.params[0], str) else ''
+        value_ref = core.params[2] if isinstance(core.params[2], Ref) else None
+        sa_ref = core.params[3] if isinstance(core.params[3], Ref) else None
+        value, unit = self._measure(value_ref.entity_id) if value_ref else (None, None)
+
+        # Datum reference frame: complex GTWDR part, or 5th param of simple form
+        ds_param = None
         gtdr = entity.get_part('GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE')
         if gtdr and gtdr.params:
-            # param[0] is list of datum_system refs
-            ds_refs = gtdr.params[0] if isinstance(gtdr.params[0], list) else []
-            for ds_ref in ds_refs:
-                if isinstance(ds_ref, Ref):
-                    datum_system_id = ds_ref.entity_id
-                    datum_labels = self._resolve_datum_system_labels(ds_ref.entity_id)
-                    break
+            ds_param = gtdr.params[0]
+        elif not entity.is_complex and len(core.params) >= 5:
+            ds_param = core.params[4]
+        datum_system_id = None
+        datum_refs: List[DatumReference] = []
+        for ds_ref in (ds_param if isinstance(ds_param, list) else [ds_param]):
+            if isinstance(ds_ref, Ref):
+                datum_system_id = ds_ref.entity_id
+                datum_refs = self._resolve_datum_system(ds_ref.entity_id)
+                break
 
-        # Extract modifiers
-        modifiers = []
+        modifiers: List[str] = []
         gtwm = entity.get_part('GEOMETRIC_TOLERANCE_WITH_MODIFIERS')
-        if gtwm and gtwm.params:
-            mod_list = gtwm.params[0] if isinstance(gtwm.params[0], list) else []
-            for m in mod_list:
-                if isinstance(m, EnumValue):
-                    modifiers.append(m.value)
+        if gtwm and gtwm.params and isinstance(gtwm.params[0], list):
+            modifiers = [m.value for m in gtwm.params[0] if isinstance(m, EnumValue)]
 
-        value = self._extract_measure_value(value_ref.entity_id) if value_ref else None
-        faces = self._resolve_faces(sa_ref.entity_id) if sa_ref else []
+        unit_basis: List[float] = []
+        area_type = None
+        gtdu = entity.get_part('GEOMETRIC_TOLERANCE_WITH_DEFINED_UNIT')
+        if gtdu and gtdu.params and isinstance(gtdu.params[0], Ref):
+            size = self._measure(gtdu.params[0].entity_id)[0]
+            if size is not None:
+                unit_basis.append(size)
+        gtda = entity.get_part('GEOMETRIC_TOLERANCE_WITH_DEFINED_AREA_UNIT')
+        if gtda and gtda.params:
+            if isinstance(gtda.params[0], EnumValue):
+                area_type = gtda.params[0].value
+            if len(gtda.params) > 1 and isinstance(gtda.params[1], Ref):
+                second = self._measure(gtda.params[1].entity_id)[0]
+                if second is not None:
+                    unit_basis.append(second)
+
+        max_value = None
+        gtmax = entity.get_part('GEOMETRIC_TOLERANCE_WITH_MAXIMUM_TOLERANCE')
+        if gtmax and gtmax.params and isinstance(gtmax.params[0], Ref):
+            max_value = self._measure(gtmax.params[0].entity_id)[0]
+
+        unequal = None
+        udgt = entity.get_part('UNEQUALLY_DISPOSED_GEOMETRIC_TOLERANCE')
+        if udgt and udgt.params and isinstance(udgt.params[0], Ref):
+            unequal = self._measure(udgt.params[0].entity_id)[0]
+
+        projected = None
+        zone_id = self._zone_of_tolerance.get(entity.entity_id)
+        if zone_id in self._projected_length:
+            projected = self._measure(self._projected_length[zone_id])[0]
+
+        targets = self._resolve_targets(sa_ref.entity_id) if sa_ref else _Targets([], [], [], False)
+        sa_entity = self._entity(sa_ref)
 
         return ToleranceInfo(
             entity_id=entity.entity_id,
             name=name,
             tolerance_type=ttype,
             value=value,
-            face_ids=faces,
-            datum_labels=datum_labels,
+            face_ids=targets.faces,
+            datum_labels=[d.label for d in datum_refs],
             datum_system_id=datum_system_id,
             modifiers=modifiers,
             shape_aspect_id=sa_ref.entity_id if sa_ref else None,
             value_entity_id=value_ref.entity_id if value_ref else None,
-            is_complex=True,
+            is_complex=entity.is_complex,
+            unit=unit,
+            zone_form=self._zone_form.get(entity.entity_id),
+            projected_length=projected,
+            unequal_displacement=unequal,
+            max_value=max_value,
+            unit_basis=unit_basis,
+            unit_basis_area_type=area_type,
+            datum_references=datum_refs,
+            all_around=bool(sa_entity and sa_entity.has_type('ALL_AROUND_SHAPE_ASPECT')),
+            whole_part=targets.whole_part,
+            edge_ids=targets.edges,
+            other_geometry_ids=targets.others,
+            feature_count=self._feature_count(sa_ref.entity_id if sa_ref else None),
         )
+
+    # Kept for backwards compatibility with code calling the old helpers
+    def _extract_simple_tolerance(self, entity: Entity, ttype: str) -> Optional[ToleranceInfo]:
+        return self._extract_tolerance(entity)
+
+    def _extract_complex_tolerance(self, entity: Entity) -> Optional[ToleranceInfo]:
+        return self._extract_tolerance(entity)
 
     # ------------------------------------------------------------------
     # Extract dimensions
     # ------------------------------------------------------------------
 
     def _extract_dimensions(self) -> List[DimensionInfo]:
-        dimensions = []
-
-        dim_types = [
-            'DIMENSIONAL_SIZE', 'DIMENSIONAL_LOCATION',
-            'ANGULAR_SIZE', 'ANGULAR_LOCATION',
-            'DIRECTED_DIMENSIONAL_LOCATION',
-            'DIMENSIONAL_SIZE_WITH_DATUM_FEATURE',
-        ]
-
-        for dtype in dim_types:
+        # A complex entity can carry several dimension types — extract it once
+        dims: Dict[int, str] = {}
+        for dtype in _DIMENSION_TYPES:
             for eid in self.g.find_by_type(dtype):
-                entity = self.sf[eid]
-                info = self._extract_dimension(entity, dtype)
-                if info:
-                    dimensions.append(info)
+                dims.setdefault(eid, dtype)
 
+        dimensions = []
+        for eid in sorted(dims):
+            info = self._extract_dimension(self.sf[eid], dims[eid])
+            if info:
+                dimensions.append(info)
         return dimensions
 
     def _extract_dimension(self, entity: Entity,
                            dtype: str) -> Optional[DimensionInfo]:
         """Extract info from a dimensional entity."""
-        params = entity.params
+        part = entity.get_part(dtype) or entity.parts[0]
+        params = part.params
         if not params:
             return None
 
         # Two layouts:
         #   DIMENSIONAL_SIZE(shape_aspect_ref, name_string)
         #   DIMENSIONAL_LOCATION(name, desc, shape_aspect_ref1, shape_aspect_ref2)
-        is_location = dtype in ('DIMENSIONAL_LOCATION', 'DIRECTED_DIMENSIONAL_LOCATION',
-                                'ANGULAR_LOCATION')
-
         sa_ref = None
         sa_ref_2 = None
         semantic = ''
 
-        if is_location:
-            # DIMENSIONAL_LOCATION(name, desc, sa_ref1, sa_ref2)
-            if len(params) >= 1 and isinstance(params[0], str):
+        if dtype in _LOCATION_DIMENSION_TYPES:
+            if isinstance(params[0], str):
                 semantic = params[0]
             if len(params) >= 3 and isinstance(params[2], Ref):
                 sa_ref = params[2]
             if len(params) >= 4 and isinstance(params[3], Ref):
                 sa_ref_2 = params[3]
         else:
-            # DIMENSIONAL_SIZE(sa_ref, name) / ANGULAR_SIZE(sa_ref, name)
-            if isinstance(params[0], Ref):
-                sa_ref = params[0]
+            # DIMENSIONAL_SIZE_WITH_DATUM_FEATURE is itself a shape aspect:
+            #   (name, desc, of_shape, product_definitional, applies_to, name)
+            # so take the first entity reference that is not the product shape.
+            for p in params:
+                ref_entity = self._entity(p)
+                if ref_entity is not None and not ref_entity.has_type('PRODUCT_DEFINITION_SHAPE'):
+                    sa_ref = p
+                    break
             for p in params:
                 if isinstance(p, str) and p:
                     semantic = p
                     break
 
-        from_faces: List[int] = []
-        to_faces: List[int] = []
+        empty = _Targets([], [], [], False)
+        t1 = self._resolve_targets(sa_ref.entity_id) if sa_ref else empty
+        t2 = self._resolve_targets(sa_ref_2.entity_id) if sa_ref_2 else empty
 
-        if sa_ref:
-            from_faces = self._resolve_faces(sa_ref.entity_id)
-
-        if sa_ref_2:
-            to_faces = self._resolve_faces(sa_ref_2.entity_id)
-
-        # face_ids = union of from + to, deduplicated
-        seen: set = set()
-        faces: List[int] = []
-        for f in from_faces + to_faces:
-            if f not in seen:
-                seen.add(f)
-                faces.append(f)
-
-        # Find PLUS_MINUS_TOLERANCE referencing this dimension
-        nominal = None
-        upper = None
-        lower = None
-        pmt_id = None
-
-        for pm_eid in self.g.find_by_type('PLUS_MINUS_TOLERANCE'):
-            pm = self.sf[pm_eid]
-            # PLUS_MINUS_TOLERANCE(tolerance_value_ref, dimension_ref)
-            if len(pm.params) >= 2 and isinstance(pm.params[1], Ref):
-                if pm.params[1].entity_id == entity.entity_id:
-                    pmt_id = pm_eid
-                    # Extract upper/lower from TOLERANCE_VALUE
-                    if isinstance(pm.params[0], Ref):
-                        tv = self.sf.entities.get(pm.params[0].entity_id)
-                        if tv and tv.has_type('TOLERANCE_VALUE') and len(tv.params) >= 2:
-                            if isinstance(tv.params[0], Ref):
-                                lower = self._extract_measure_value(tv.params[0].entity_id)
-                            if isinstance(tv.params[1], Ref):
-                                upper = self._extract_measure_value(tv.params[1].entity_id)
-                    break
-
-        # Find nominal value via DIMENSIONAL_CHARACTERISTIC_REPRESENTATION
-        for dcr_eid in self.g.find_by_type('DIMENSIONAL_CHARACTERISTIC_REPRESENTATION'):
-            dcr = self.sf[dcr_eid]
-            # DCR(dimension_ref, shape_dimension_representation_ref)
-            if len(dcr.params) >= 2 and isinstance(dcr.params[0], Ref):
-                if dcr.params[0].entity_id == entity.entity_id:
-                    if isinstance(dcr.params[1], Ref):
-                        sdr = self.sf.entities.get(dcr.params[1].entity_id)
-                        if sdr and len(sdr.params) >= 2:
-                            measures = sdr.params[1]
-                            if isinstance(measures, list):
-                                for m_ref in measures:
-                                    if isinstance(m_ref, Ref):
-                                        val = self._extract_measure_value(m_ref.entity_id)
-                                        if val is not None:
-                                            nominal = val
-                                            break
-                    break
-
-        return DimensionInfo(
+        info = DimensionInfo(
             entity_id=entity.entity_id,
             name=entity.type_name,
             dimension_type=dtype,
             semantic_name=semantic,
-            nominal_value=nominal,
-            upper_tolerance=upper,
-            lower_tolerance=lower,
-            face_ids=faces,
-            from_face_ids=from_faces,
-            to_face_ids=to_faces,
+            face_ids=_dedupe(t1.faces + t2.faces),
+            from_face_ids=t1.faces,
+            to_face_ids=t2.faces,
             shape_aspect_id=sa_ref.entity_id if sa_ref else None,
             shape_aspect_id_2=sa_ref_2.entity_id if sa_ref_2 else None,
-            plus_minus_id=pmt_id,
+            edge_ids=_dedupe(t1.edges + t2.edges),
+            other_geometry_ids=_dedupe(t1.others + t2.others),
+            feature_count=self._feature_count(sa_ref.entity_id if sa_ref else None),
         )
+        self._fill_dimension_values(info)
+        self._fill_dimension_tolerance(info)
+        return info
+
+    def _fill_dimension_values(self, info: DimensionInfo):
+        """Nominal / limit values from SHAPE_DIMENSION_REPRESENTATION items.
+
+        Each item is a measure named 'nominal value', 'upper limit' or
+        'lower limit', optionally qualified (TYPE_QUALIFIER('maximum'),
+        VALUE_FORMAT_TYPE_QUALIFIER('NR2 1.2')).
+        """
+        rep = self.sf.entities.get(self._dim_reps.get(info.entity_id, -1))
+        if rep is None or len(rep.params) < 2 or not isinstance(rep.params[1], list):
+            return
+
+        for item_ref in rep.params[1]:
+            item = self._entity(item_ref)
+            if item is None:
+                continue
+            value, unit = self._measure(item.entity_id)
+            ri = item.get_part('REPRESENTATION_ITEM')
+            role = ri.params[0].strip().lower() if ri and ri.params and isinstance(ri.params[0], str) else ''
+
+            qri = item.get_part('QUALIFIED_REPRESENTATION_ITEM')
+            for q_ref in (qri.params[0] if qri and qri.params and isinstance(qri.params[0], list) else []):
+                self._apply_qualifier(info, self._entity(q_ref))
+
+            if value is None:
+                continue
+            if unit and info.unit is None:
+                info.unit = unit
+            if role == 'upper limit':
+                info.upper_limit = value
+            elif role == 'lower limit':
+                info.lower_limit = value
+            elif info.nominal_value is None:
+                info.nominal_value = value
+
+    @staticmethod
+    def _apply_qualifier(info: DimensionInfo, q: Optional[Entity]):
+        if q is None or not q.params or not isinstance(q.params[0], str):
+            return
+        text = q.params[0].strip()
+        if q.has_type('VALUE_FORMAT_TYPE_QUALIFIER') or text.upper().startswith('NR'):
+            # 'NR2 1.2' → 2 decimals
+            _, _, spec = text.partition(' ')
+            if '.' in spec:
+                try:
+                    info.decimals = int(spec.split('.')[1])
+                except ValueError:
+                    pass
+        elif q.has_type('TYPE_QUALIFIER'):
+            info.qualifier = text.lower()
+
+    def _fill_dimension_tolerance(self, info: DimensionInfo):
+        """± tolerance or ISO fit from PLUS_MINUS_TOLERANCE(range, dimension)."""
+        pm_id = self._plus_minus.get(info.entity_id)
+        if pm_id is None:
+            return
+        info.plus_minus_id = pm_id
+        rng = self._entity(self.sf[pm_id].params[0])
+        if rng is None:
+            return
+
+        if rng.has_type('TOLERANCE_VALUE') and len(rng.params) >= 2:
+            # TOLERANCE_VALUE(lower_bound, upper_bound)
+            if isinstance(rng.params[0], Ref):
+                info.lower_tolerance = self._measure(rng.params[0].entity_id)[0]
+            if isinstance(rng.params[1], Ref):
+                info.upper_tolerance = self._measure(rng.params[1].entity_id)[0]
+        elif rng.has_type('LIMITS_AND_FITS'):
+            # LIMITS_AND_FITS(form_variance, zone_variance, grade, source)
+            texts = [p.strip() if isinstance(p, str) else '' for p in rng.params[:4]]
+            texts += [''] * (4 - len(texts))
+            form_variance, zone_variance, grade = texts[0], texts[1], texts[2]
+            if zone_variance.lower() in ('hole', 'shaft'):
+                info.fit_kind = zone_variance.lower()
+                info.fit = (form_variance + grade) or None
+            else:
+                info.fit = (form_variance + zone_variance + grade) or None
 
     # ------------------------------------------------------------------
     # Extract datums
@@ -629,23 +840,19 @@ class PMIExtractor:
             entity = self.sf[eid]
             # DATUM(name, desc, product_def_shape, product_definitional, label)
             label = ''
-            if len(entity.params) >= 5:
-                label = entity.params[4] if isinstance(entity.params[4], str) else ''
+            if len(entity.params) >= 5 and isinstance(entity.params[4], str):
+                label = entity.params[4]
 
-            # Find the DATUM_FEATURE linked to this datum
-            df_id = None
-            faces = []
-            for df_eid, datum_eid in self._datum_feature_to_datum.items():
-                if datum_eid == eid:
-                    df_id = df_eid
-                    faces = self._resolve_faces(df_id)
-                    break
+            df_id = self._datum_to_feature.get(eid)
+            targets = self._resolve_targets(df_id) if df_id else _Targets([], [], [], False)
 
             datums.append(DatumInfo(
                 entity_id=eid,
                 label=label,
                 datum_feature_id=df_id,
-                face_ids=faces,
+                face_ids=targets.faces,
+                edge_ids=targets.edges,
+                other_geometry_ids=targets.others,
             ))
 
         return datums
@@ -657,44 +864,88 @@ class PMIExtractor:
             entity = self.sf[eid]
             name = entity.params[0] if isinstance(entity.params[0], str) else ''
 
-            labels = self._resolve_datum_system_labels(eid)
+            refs = self._resolve_datum_system(eid)
             compartments = []
             if len(entity.params) >= 5 and isinstance(entity.params[4], list):
-                for c_ref in entity.params[4]:
-                    if isinstance(c_ref, Ref):
-                        compartments.append(c_ref.entity_id)
+                compartments = [c.entity_id for c in entity.params[4] if isinstance(c, Ref)]
 
             systems.append(DatumSystemInfo(
                 entity_id=eid,
                 name=name,
-                datum_labels=labels,
+                datum_labels=[r.label for r in refs],
                 compartment_ids=compartments,
+                datum_references=refs,
             ))
 
         return systems
 
     def _resolve_datum_system_labels(self, ds_id: int) -> List[str]:
         """Resolve a DATUM_SYSTEM entity to ordered datum labels ['A','B','C']."""
-        labels = []
+        return [r.label for r in self._resolve_datum_system(ds_id)]
+
+    def _resolve_datum_system(self, ds_id: int) -> List[DatumReference]:
+        """Resolve a DATUM_SYSTEM to its ordered compartments.
+
+        DATUM_SYSTEM(name, desc, of_shape, product_definitional, (compartments))
+        DATUM_REFERENCE_COMPARTMENT(name, desc, of_shape, pd, base, modifiers)
+          base: DATUM, or COMMON_DATUM_LIST((DATUM_REFERENCE_ELEMENT, ...))
+        """
         entity = self.sf.entities.get(ds_id)
         if not entity or not entity.has_type('DATUM_SYSTEM'):
-            return labels
+            return []
+        refs = []
+        constituents = entity.params[4] if len(entity.params) >= 5 else []
+        for comp_ref in (constituents if isinstance(constituents, list) else []):
+            comp = self._entity(comp_ref)
+            if comp is None or len(comp.params) < 5:
+                continue
+            labels, modifiers = self._resolve_datum_base(comp.params[4])
+            modifiers += self._datum_modifiers(comp.params[5] if len(comp.params) > 5 else None)
+            if labels:
+                refs.append(DatumReference(label='-'.join(labels),
+                                           modifiers=_dedupe_str(modifiers)))
+        return refs
 
-        # param[4] = list of DATUM_REFERENCE_COMPARTMENT refs
-        if len(entity.params) >= 5 and isinstance(entity.params[4], list):
-            for comp_ref in entity.params[4]:
-                if isinstance(comp_ref, Ref):
-                    comp = self.sf.entities.get(comp_ref.entity_id)
-                    if comp and len(comp.params) >= 5:
-                        datum_ref = comp.params[4]
-                        if isinstance(datum_ref, Ref):
-                            datum = self.sf.entities.get(datum_ref.entity_id)
-                            if datum and datum.has_type('DATUM'):
-                                if len(datum.params) >= 5:
-                                    label = datum.params[4]
-                                    if isinstance(label, str):
-                                        labels.append(label)
-        return labels
+    def _resolve_datum_base(self, base: StepParam) -> Tuple[List[str], List[str]]:
+        """Labels and element modifiers of a compartment/element base."""
+        if isinstance(base, TypedValue):          # COMMON_DATUM_LIST((elements))
+            base = base.value
+        if isinstance(base, list):
+            labels, modifiers = [], []
+            for element_ref in base:
+                element = self._entity(element_ref)
+                if element is None or len(element.params) < 5:
+                    continue
+                sub_labels, sub_mods = self._resolve_datum_base(element.params[4])
+                labels += sub_labels
+                modifiers += sub_mods
+                modifiers += self._datum_modifiers(element.params[5] if len(element.params) > 5 else None)
+            return _dedupe_str(labels), modifiers
+        datum = self._entity(base)
+        if datum is not None and datum.has_type('DATUM') and len(datum.params) >= 5:
+            if isinstance(datum.params[4], str) and datum.params[4]:
+                return [datum.params[4]], []
+        return [], []
+
+    def _datum_modifiers(self, mods: StepParam) -> List[str]:
+        """SIMPLE_DATUM_REFERENCE_MODIFIER(.X.) values and DATUM_REFERENCE_MODIFIER_WITH_VALUE."""
+        out = []
+        for m in (mods if isinstance(mods, list) else []):
+            if isinstance(m, TypedValue) and isinstance(m.value, EnumValue):
+                out.append(m.value.value)
+            elif isinstance(m, EnumValue):
+                out.append(m.value)
+            elif isinstance(m, Ref):
+                e = self._entity(m)
+                if e is not None and e.params and isinstance(e.params[0], EnumValue):
+                    value = self._measure(e.params[1].entity_id)[0] if len(e.params) > 1 and isinstance(e.params[1], Ref) else None
+                    out.append(e.params[0].value if value is None else f"{e.params[0].value} {value:g}")
+        return out
+
+
+def _dedupe_str(items: List[str]) -> List[str]:
+    seen: Set[str] = set()
+    return [i for i in items if not (i in seen or seen.add(i))]
 
 
 # ======================================================================
